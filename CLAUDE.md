@@ -69,4 +69,5 @@
 ## 現在の状態
 
 - 段階1：Next.js 作成・shadcn/ui 初期設定・GitHub push・Vercel 公開まで完了
-- Supabase プロジェクトは未作成（障害のため延期）。環境変数も未設定
+- 段階3：マジックリンクでのログインを実装。ローカルで動作確認済み。Vercel 本番は未確認
+- 開発モードで `Date.now()` の Blocking Route 警告が残っているが、`pnpm build` は成功する
