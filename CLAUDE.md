@@ -54,6 +54,14 @@
 - 新しいライブラリを足す前に、必要か確認を取る
 - コミットメッセージは英語の Conventional Commits 形式（例：`feat: add magic link login`）
 
+## 決定事項
+
+- ログインは招待した人だけ（SQL ではなく、Supabase の設定と段階3のコードで対応）
+  - Supabase の Auth 設定で新規登録（sign up）をオフにする
+  - `signInWithOtp` は `shouldCreateUser: false` で呼ぶ
+  - お客様の招待はサーバー側で `service_role` を使って行う
+- 最初の管理者は、Supabase の SQL Editor で手動で `profiles.role` を `admin` に変更する（本番なので実行前に確認を取る）
+
 ## 進め方（7段階）
 
 0 準備 → 1 土台 → 2 データ設計（テーブル3つと RLS） → 3 ログイン → 4 管理画面 → 5 ファイル → 6 お客様画面 → 7 確認と公開
