@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { requireAdmin } from "@/lib/auth";
 
 import { signOut } from "../auth/actions";
+import { InviteForm } from "./invite-form";
 
 async function AdminContent() {
   await requireAdmin();
@@ -14,6 +15,7 @@ async function AdminContent() {
       <p className="text-sm text-muted-foreground">
         ここに案件の一覧と招待を追加していきます。
       </p>
+      <InviteForm />
     </>
   );
 }
