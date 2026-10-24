@@ -1,6 +1,9 @@
 import { Suspense } from "react";
 
+import { Button } from "@/components/ui/button";
 import { createClient } from "@/lib/supabase/server";
+
+import { signOut } from "./auth/actions";
 
 async function UserEmail() {
   const supabase = await createClient();
@@ -17,6 +20,11 @@ export default function Home() {
       <Suspense fallback={<p className="text-lg font-medium">…</p>}>
         <UserEmail />
       </Suspense>
+      <form action={signOut} className="mt-4">
+        <Button type="submit" variant="outline">
+          ログアウト
+        </Button>
+      </form>
     </main>
   );
 }
