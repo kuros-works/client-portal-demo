@@ -19,7 +19,8 @@ export function LoginForm() {
   if (state.status === "sent") {
     return (
       <p className="text-sm">
-        登録済みのメールアドレスであれば、ログイン用のリンクを送りました。メールをご確認ください。
+        If an account exists for that email, we&apos;ve sent a sign-in link.
+        Please check your inbox.
       </p>
     );
   }
@@ -27,7 +28,7 @@ export function LoginForm() {
   return (
     <form action={formAction} className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
-        <Label htmlFor="email">メールアドレス</Label>
+        <Label htmlFor="email">Email</Label>
         <Input
           id="email"
           name="email"
@@ -37,12 +38,12 @@ export function LoginForm() {
         />
         {state.status === "invalid" && (
           <p className="text-sm text-destructive">
-            メールアドレスを正しく入力してください。
+            Please enter a valid email address.
           </p>
         )}
       </div>
       <Button type="submit" disabled={pending} className="w-full">
-        {pending ? "送信中…" : "ログインリンクを送る"}
+        {pending ? "Sending…" : "Email me a sign-in link"}
       </Button>
     </form>
   );

@@ -29,7 +29,7 @@ async function LoginContent({
     <>
       {error && (
         <p className="text-sm text-destructive">
-          ログインに失敗しました。もう一度リンクを送ってください。
+          We couldn&apos;t sign you in. Please request a new link.
         </p>
       )}
       <LoginForm />
@@ -46,9 +46,9 @@ export default function LoginPage({
     <main className="flex flex-1 items-center justify-center px-4 py-12">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle>ログイン</CardTitle>
+          <CardTitle>Sign in</CardTitle>
           <CardDescription>
-            メールアドレスにログイン用のリンクを送ります。
+            We&apos;ll email you a link to sign in.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
