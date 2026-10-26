@@ -214,7 +214,7 @@ revoke all on public.project_files from anon;
 
 -- ---------------------------------------------------------
 -- Storage：非公開バケット project-files
--- パスは「案件ID/ファイル名」、1ファイル 10MB まで
+-- パスは「案件ID/ファイルID」（ファイルID は project_files.id と同じ）、1ファイル 10MB まで
 -- ---------------------------------------------------------
 insert into storage.buckets (id, name, public, file_size_limit)
 values ('project-files', 'project-files', false, 10485760)
@@ -225,6 +225,8 @@ on conflict (id) do nothing;
 -- storage.objects のポリシー
 -- 管理者：project-files バケット内の全操作
 -- お客様：パスの先頭フォルダが自分の案件ID のファイルを読むだけ
+-- ※ 「client select own」は name が projects.name に解決されてしまうため、
+--    0002_fix_storage_client_policy.sql で storage.objects.name に直している
 -- ---------------------------------------------------------
 create policy "project-files: admin all"
   on storage.objects
