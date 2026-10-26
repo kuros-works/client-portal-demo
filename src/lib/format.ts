@@ -1,10 +1,10 @@
-export const dateFormatter = new Intl.DateTimeFormat("ja-JP", {
+export const dateFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
-  timeZone: "Asia/Tokyo",
+  timeZone: "UTC",
 });
 
-export const dateTimeFormatter = new Intl.DateTimeFormat("ja-JP", {
+export const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
   timeStyle: "short",
-  timeZone: "Asia/Tokyo",
+  timeZone: "UTC",
 });

@@ -7,9 +7,9 @@ export const PROJECT_STATUSES = [
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
 export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
-  in_progress: "進行中",
-  in_review: "確認中",
-  delivered: "納品済み",
+  in_progress: "In progress",
+  in_review: "In review",
+  delivered: "Delivered",
 };
 
 export function isProjectStatus(value: unknown): value is ProjectStatus {
