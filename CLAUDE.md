@@ -38,7 +38,7 @@
 - **profiles**：id（auth.users と同じ）、email、name、role（`admin` / `client`）
 - **projects**：id、name、status、client_id → profiles、created_at
 - **project_files**：id、project_id → projects、file_name、storage_path、size、uploaded_at
-- **Storage**：非公開バケット。パスは `案件ID/ファイル名`
+- **Storage**：非公開バケット。パスは `案件ID/<ファイルID>`（ファイルID は project_files.id と同じ）。元のファイル名は `file_name` 列に保存する
 - **RLS**：管理者は全件。お客様は自分の案件とそのファイルだけ閲覧可。作成・変更・削除・招待は管理者のみ
 
 ## 守るルール
@@ -62,6 +62,7 @@
   - `signInWithOtp` は `shouldCreateUser: false` で呼ぶ
   - お客様の招待はサーバー側で `service_role` を使って行う
 - 最初の管理者は、Supabase の SQL Editor で手動で `profiles.role` を `admin` に変更する（本番なので実行前に確認を取る）
+- `createSignedUrl` の `download` オプションは日本語名を2回エンコードするので使わない。`download` は自分で URL に1回だけ付ける（`src/app/files/[id]/download/route.ts`）
 
 ## 進め方（7段階）
 
