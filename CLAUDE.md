@@ -35,11 +35,28 @@
 
 ## テーブル設計
 
-- **profiles**：id（auth.users と同じ）、email、name、role（`admin` / `client`）
-- **projects**：id、name、status、client_id → profiles、created_at
-- **project_files**：id、project_id → projects、file_name、storage_path、size、uploaded_at
-- **Storage**：非公開バケット。パスは `案件ID/<ファイルID>`（ファイルID は project_files.id と同じ）。元のファイル名は `file_name` 列に保存する
-- **RLS**：管理者は全件。お客様は自分の案件とそのファイルだけ閲覧可。作成・変更・削除・招待は管理者のみ
+定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正）。
+
+- **profiles**：id、email、name、role、created_at
+  - id は auth.users(id) への外部キー（削除時は連動して削除）
+  - email は必須、name は任意
+  - role は `admin` / `client` のどちらか（初期値 `client`）
+  - auth.users に行が増えると、トリガー（`on_auth_user_created`）が role = `client` で自動作成する
+- **projects**：id、name、status、client_id、created_at、updated_at
+  - status は `in_progress` / `in_review` / `delivered`（初期値 `in_progress`）
+  - client_id は profiles(id) への外部キー・必須（`on delete restrict`：案件が残っている間はお客様のプロフィールを削除できない）
+  - updated_at は更新時にトリガーで自動更新する
+- **project_files**：id、project_id、file_name、storage_path、size、uploaded_at
+  - project_id は projects(id) への外部キー（`on delete cascade`：案件を消すと行も消える。Storage の実体は消えない）
+  - storage_path は一意。size は 0 以上
+- **Storage**：非公開バケット `project-files`（バケットの上限は 1 ファイル 10MB。アプリ側の上限は 4MB）
+  - パスは `案件ID/<ファイルID>`（ファイルID は project_files.id と同じ）。元のファイル名は `file_name` 列に保存する
+- **RLS**：3 テーブルと storage.objects で有効。作成・変更・削除・招待は管理者のみ
+  - 各テーブルに「admin all」（管理者は全操作）と「client select own」（お客様は閲覧のみ）の 2 つを置く
+  - お客様が見られる範囲：profiles は自分の行、projects は `client_id` が自分の案件、project_files は自分の案件のファイル
+  - Storage は、パスの先頭フォルダが自分の案件ID のファイルだけ読める（0002 で `storage.objects.name` を明示する形に修正済み）
+  - 管理者の判定は `is_admin()`（security definer・`profiles.role` を参照・実行できるのは authenticated のみ）
+  - 権限：authenticated と service_role に 3 テーブルの select / insert / update / delete を付与。anon には何も与えない。service_role は RLS を通らない
 
 ## 守るルール
 
