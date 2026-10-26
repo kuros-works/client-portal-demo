@@ -2,6 +2,7 @@ import { Suspense } from "react";
 
 import { Button, buttonVariants } from "@/components/ui/button";
 import { requireAdmin } from "@/lib/auth";
+import { dateFormatter, dateTimeFormatter } from "@/lib/format";
 import { formatFileSize } from "@/lib/project-files";
 import { createClient } from "@/lib/supabase/server";
 
@@ -11,17 +12,6 @@ import { FileUploadForm } from "./file-upload-form";
 import { InviteForm } from "./invite-form";
 import { ProjectForm } from "./project-form";
 import { StatusForm } from "./status-form";
-
-const dateFormatter = new Intl.DateTimeFormat("ja-JP", {
-  dateStyle: "medium",
-  timeZone: "Asia/Tokyo",
-});
-
-const dateTimeFormatter = new Intl.DateTimeFormat("ja-JP", {
-  dateStyle: "medium",
-  timeStyle: "short",
-  timeZone: "Asia/Tokyo",
-});
 
 // 多対一の結合結果。型の上では配列にもなりうるので、どちらでもメールを取り出す
 function clientEmail(profiles: { email: string } | { email: string }[] | null) {
