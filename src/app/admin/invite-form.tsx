@@ -19,7 +19,7 @@ export function InviteForm() {
   return (
     <form action={formAction} className="flex max-w-sm flex-col gap-4">
       <div className="flex flex-col gap-2">
-        <Label htmlFor="email">お客様のメールアドレス</Label>
+        <Label htmlFor="email">Client email</Label>
         <Input
           id="email"
           name="email"
@@ -29,27 +29,28 @@ export function InviteForm() {
         />
         {state.status === "invalid" && (
           <p className="text-sm text-destructive">
-            メールアドレスを正しく入力してください。
+            Please enter a valid email address.
           </p>
         )}
         {state.status === "exists" && (
           <p className="text-sm text-destructive">
-            このメールアドレスは、すでに登録されています。
+            A client with this email already exists.
           </p>
         )}
         {state.status === "error" && (
           <p className="text-sm text-destructive">
-            登録に失敗しました。時間をおいて、もう一度お試しください。
+            We couldn&apos;t invite the client. Please try again later.
           </p>
         )}
         {state.status === "invited" && (
           <p className="text-sm">
-            お客様を登録しました。メールは送っていません。お客様はログイン画面からリンクを依頼できます。
+            Client added. No email was sent. They can request a sign-in link
+            from the sign-in page.
           </p>
         )}
       </div>
       <Button type="submit" disabled={pending} className="w-full">
-        {pending ? "送信中…" : "招待する"}
+        {pending ? "Inviting…" : "Invite"}
       </Button>
     </form>
   );

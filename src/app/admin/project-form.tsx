@@ -31,11 +31,11 @@ export function ProjectForm({ clients }: { clients: ClientOption[] }) {
   return (
     <form action={formAction} className="flex max-w-sm flex-col gap-4">
       <div className="flex flex-col gap-2">
-        <Label htmlFor="project-name">案件名</Label>
+        <Label htmlFor="project-name">Project name</Label>
         <Input id="project-name" name="name" required />
       </div>
       <div className="flex flex-col gap-2">
-        <Label htmlFor="project-client">お客様</Label>
+        <Label htmlFor="project-client">Client</Label>
         <select
           id="project-client"
           name="client_id"
@@ -44,7 +44,7 @@ export function ProjectForm({ clients }: { clients: ClientOption[] }) {
           className={selectClassName}
         >
           <option value="" disabled>
-            選んでください
+            Select a client
           </option>
           {clients.map((client) => (
             <option key={client.id} value={client.id}>
@@ -54,12 +54,12 @@ export function ProjectForm({ clients }: { clients: ClientOption[] }) {
         </select>
         {clients.length === 0 && (
           <p className="text-sm text-muted-foreground">
-            先にお客様を招待してください。
+            Invite a client first.
           </p>
         )}
       </div>
       <div className="flex flex-col gap-2">
-        <Label htmlFor="project-status">ステータス</Label>
+        <Label htmlFor="project-status">Status</Label>
         <select
           id="project-status"
           name="status"
@@ -67,7 +67,7 @@ export function ProjectForm({ clients }: { clients: ClientOption[] }) {
           className={selectClassName}
         >
           <option value="">
-            初期値（{PROJECT_STATUS_LABELS.in_progress}）
+            Default ({PROJECT_STATUS_LABELS.in_progress})
           </option>
           {PROJECT_STATUSES.map((status) => (
             <option key={status} value={status}>
@@ -78,19 +78,19 @@ export function ProjectForm({ clients }: { clients: ClientOption[] }) {
       </div>
       {state.status === "invalid" && (
         <p className="text-sm text-destructive">
-          案件名とお客様を入力してください。
+          Please enter a project name and select a client.
         </p>
       )}
       {state.status === "error" && (
         <p className="text-sm text-destructive">
-          作成に失敗しました。時間をおいて、もう一度お試しください。
+          We couldn&apos;t create the project. Please try again later.
         </p>
       )}
       {state.status === "created" && (
-        <p className="text-sm">案件を作成しました。</p>
+        <p className="text-sm">Project created.</p>
       )}
       <Button type="submit" disabled={pending} className="w-full">
-        {pending ? "送信中…" : "案件を作成する"}
+        {pending ? "Creating…" : "Create project"}
       </Button>
     </form>
   );

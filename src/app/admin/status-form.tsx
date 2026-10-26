@@ -32,7 +32,7 @@ export function StatusForm({
         <select
           name="status"
           defaultValue={isProjectStatus(status) ? status : ""}
-          aria-label="ステータス"
+          aria-label="Status"
           className="h-9 rounded-md border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
         >
           {PROJECT_STATUSES.map((value) => (
@@ -42,26 +42,27 @@ export function StatusForm({
           ))}
         </select>
         <Button type="submit" variant="outline" disabled={pending}>
-          {pending ? "変更中…" : "変更"}
+          {pending ? "Updating…" : "Update"}
         </Button>
       </div>
       {state.status === "invalid" && (
         <p className="text-sm text-destructive">
-          ステータスを正しく選んでください。
+          Please select a valid status.
         </p>
       )}
       {state.status === "not_updated" && (
         <p className="text-sm text-destructive">
-          更新されませんでした。案件が存在しないか、更新の権限がありません。
+          We couldn&apos;t update the status. The project may not exist, or you
+          may not have permission.
         </p>
       )}
       {state.status === "error" && (
         <p className="text-sm text-destructive">
-          変更に失敗しました。時間をおいて、もう一度お試しください。
+          We couldn&apos;t update the status. Please try again later.
         </p>
       )}
       {state.status === "updated" && (
-        <p className="text-sm">ステータスを変更しました。</p>
+        <p className="text-sm">Status updated.</p>
       )}
     </form>
   );

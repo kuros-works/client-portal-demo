@@ -29,33 +29,33 @@ export function FileDeleteForm({
         size="sm"
         disabled={pending}
         onClick={(event) => {
-          if (!window.confirm(`「${fileName}」を本当に削除しますか？`)) {
+          if (!window.confirm(`Are you sure you want to delete "${fileName}"?`)) {
             event.preventDefault();
           }
         }}
       >
-        {pending ? "削除中…" : "削除"}
+        {pending ? "Deleting…" : "Delete"}
       </Button>
       {state.status === "invalid" && (
-        <p className="text-sm text-destructive">ファイルの指定が正しくありません。</p>
+        <p className="text-sm text-destructive">Invalid file.</p>
       )}
       {state.status === "not_found" && (
         <p className="text-sm text-destructive">
-          ファイルが見つかりません。すでに削除された可能性があります。
+          File not found. It may have already been deleted.
         </p>
       )}
       {state.status === "not_deleted" && (
         <p className="text-sm text-destructive">
-          削除されませんでした。削除の権限がありません。
+          We couldn&apos;t delete the file. You don&apos;t have permission.
         </p>
       )}
       {state.status === "error" && (
         <p className="text-sm text-destructive">
-          削除に失敗しました。時間をおいて、もう一度お試しください。
+          We couldn&apos;t delete the file. Please try again later.
         </p>
       )}
       {/* 成功すると一覧から行が消えるので、このフォームも消える */}
-      {state.status === "deleted" && <p className="text-sm">削除しました。</p>}
+      {state.status === "deleted" && <p className="text-sm">File deleted.</p>}
     </form>
   );
 }

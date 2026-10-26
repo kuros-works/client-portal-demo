@@ -38,31 +38,31 @@ export function FileUploadForm({ projectId }: { projectId: string }) {
           type="file"
           name="file"
           required
-          aria-label="アップロードするファイル"
+          aria-label="File to upload"
           className="max-w-xs"
         />
         <Button type="submit" variant="outline" disabled={pending}>
-          {pending ? "送信中…" : "アップロード"}
+          {pending ? "Uploading…" : "Upload"}
         </Button>
       </div>
       {status === "invalid" && (
-        <p className="text-sm text-destructive">ファイルを選んでください。</p>
+        <p className="text-sm text-destructive">Please choose a file.</p>
       )}
       {status === "empty" && (
-        <p className="text-sm text-destructive">空のファイルは送れません。</p>
+        <p className="text-sm text-destructive">The file is empty.</p>
       )}
       {status === "too_large" && (
         <p className="text-sm text-destructive">
-          ファイルが大きすぎます（4MB まで）。
+          The file is too large (max 4 MB).
         </p>
       )}
       {status === "error" && (
         <p className="text-sm text-destructive">
-          アップロードに失敗しました。時間をおいて、もう一度お試しください。
+          We couldn&apos;t upload the file. Please try again later.
         </p>
       )}
       {status === "uploaded" && (
-        <p className="text-sm">ファイルをアップロードしました。</p>
+        <p className="text-sm">File uploaded.</p>
       )}
     </form>
   );

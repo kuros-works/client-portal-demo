@@ -52,23 +52,23 @@ async function AdminContent() {
 
   return (
     <>
-      <h1 className="text-2xl font-semibold">管理画面</h1>
+      <h1 className="text-2xl font-semibold">Admin</h1>
 
       <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-semibold">案件を作成</h2>
+        <h2 className="text-lg font-semibold">Create a project</h2>
         <ProjectForm clients={clients} />
       </section>
 
       <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-semibold">案件の一覧</h2>
+        <h2 className="text-lg font-semibold">Projects</h2>
         {projectsResult.error && (
           <p className="text-sm text-destructive">
-            案件を読み込めませんでした。
+            We couldn&apos;t load the projects.
           </p>
         )}
         {!projectsResult.error && projects.length === 0 && (
           <p className="text-sm text-muted-foreground">
-            案件はまだありません。
+            No projects yet.
           </p>
         )}
         <ul className="flex flex-col gap-3">
@@ -84,7 +84,7 @@ async function AdminContent() {
                     {clientEmail(project.profiles)}
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    作成日：{dateFormatter.format(new Date(project.created_at))}
+                    Created: {dateFormatter.format(new Date(project.created_at))}
                   </p>
                 </div>
                 <div className="flex flex-col gap-3">
@@ -94,7 +94,7 @@ async function AdminContent() {
               </div>
               {project.project_files.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  ファイルはまだありません。
+                  No files yet.
                 </p>
               ) : (
                 <ul className="flex flex-col divide-y border-t">
@@ -108,7 +108,8 @@ async function AdminContent() {
                           {file.file_name}
                         </p>
                         <p className="text-sm text-muted-foreground">
-                          {formatFileSize(file.size)}・
+                          {formatFileSize(file.size)}
+                          {" · "}
                           {dateTimeFormatter.format(new Date(file.uploaded_at))}
                         </p>
                       </div>
@@ -121,7 +122,7 @@ async function AdminContent() {
                             size: "sm",
                           })}
                         >
-                          ダウンロード
+                          Download
                         </a>
                         <FileDeleteForm
                           fileId={file.id}
@@ -138,7 +139,7 @@ async function AdminContent() {
       </section>
 
       <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-semibold">お客様を招待</h2>
+        <h2 className="text-lg font-semibold">Invite a client</h2>
         <InviteForm />
       </section>
     </>
@@ -153,7 +154,7 @@ export default function AdminPage() {
       </Suspense>
       <form action={signOut}>
         <Button type="submit" variant="outline">
-          ログアウト
+          Sign out
         </Button>
       </form>
     </main>
