@@ -70,6 +70,6 @@
 
 ## 現在の状態
 
-- 段階1：Next.js 作成・shadcn/ui 初期設定・GitHub push・Vercel 公開まで完了
-- 段階3：マジックリンクでのログインを実装。ローカルで動作確認済み。Vercel 本番は未確認
+- 段階0〜7 すべて完了
+- 英語化も完了：画面の文言・メタデータ（title / description）・README・開発者向けエラー文。メールテンプレートは元から英語
 - 開発モードで `Date.now()` の Blocking Route 警告が残っているが、`pnpm build` は成功する
