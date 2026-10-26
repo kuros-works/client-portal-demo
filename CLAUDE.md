@@ -24,7 +24,7 @@
 
 - Next.js 16（App Router・`src/` ディレクトリ）、React 19、TypeScript
 - Tailwind CSS v4、shadcn/ui（UI 部品は `src/components/ui/`）
-- Supabase（Auth・Postgres・Storage）※未導入
+- Supabase（Auth・Postgres・Storage）
 - Vercel
 
 ## コマンド
@@ -33,7 +33,7 @@
 - `pnpm build`：本番ビルド
 - `pnpm lint`：ESLint
 
-## テーブル設計（予定）
+## テーブル設計
 
 - **profiles**：id（auth.users と同じ）、email、name、role（`admin` / `client`）
 - **projects**：id、name、status、client_id → profiles、created_at
