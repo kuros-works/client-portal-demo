@@ -42,7 +42,9 @@ async function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
   if (error) {
     console.error("load project failed:", error.code);
     return (
-      <p className="text-sm text-destructive">案件を読み込めませんでした。</p>
+      <p className="text-sm text-destructive">
+        We couldn&apos;t load this project.
+      </p>
     );
   }
   // 見つからない場合と他人の案件を区別させないよう、どちらも 404 にする
@@ -55,7 +57,7 @@ async function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
       <div className="flex flex-col gap-1">
         <h1 className="break-all text-2xl font-semibold">{project.name}</h1>
         <p className="text-sm text-muted-foreground">
-          状態：
+          Status:{" "}
           {isProjectStatus(project.status)
             ? PROJECT_STATUS_LABELS[project.status]
             : "—"}
@@ -63,10 +65,10 @@ async function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
       </div>
 
       <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-semibold">ファイル</h2>
+        <h2 className="text-lg font-semibold">Files</h2>
         {project.project_files.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            ファイルはまだありません。
+            No files yet.
           </p>
         ) : (
           <ul className="flex flex-col divide-y border-y">
@@ -80,7 +82,8 @@ async function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
                     {file.file_name}
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    {formatFileSize(file.size)}・
+                    {formatFileSize(file.size)}
+                    {" · "}
                     {dateTimeFormatter.format(new Date(file.uploaded_at))}
                   </p>
                 </div>
@@ -93,7 +96,7 @@ async function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
                       size: "sm",
                     })}
                   >
-                    ダウンロード
+                    Download
                   </a>
                 </div>
               </li>
@@ -109,7 +112,7 @@ export default function ProjectPage({ params }: PageProps<"/projects/[id]">) {
   return (
     <main className="flex flex-1 flex-col gap-8 px-4 py-12">
       <Link href="/" className="text-sm underline underline-offset-4">
-        ← 案件の一覧へ戻る
+        ← Back to projects
       </Link>
       <Suspense fallback={<p className="text-sm text-muted-foreground">…</p>}>
         <ProjectDetail params={params} />

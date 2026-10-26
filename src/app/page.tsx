@@ -27,13 +27,15 @@ async function ProjectList() {
   if (error) {
     console.error("load projects failed:", error.code);
     return (
-      <p className="text-sm text-destructive">案件を読み込めませんでした。</p>
+      <p className="text-sm text-destructive">
+        We couldn&apos;t load your projects.
+      </p>
     );
   }
 
   if (data.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">案件はまだありません。</p>
+      <p className="text-sm text-muted-foreground">No projects yet.</p>
     );
   }
 
@@ -47,13 +49,13 @@ async function ProjectList() {
           >
             <p className="break-all font-medium">{project.name}</p>
             <p className="text-sm text-muted-foreground">
-              状態：
+              Status:{" "}
               {isProjectStatus(project.status)
                 ? PROJECT_STATUS_LABELS[project.status]
                 : "—"}
             </p>
             <p className="text-sm text-muted-foreground">
-              作成日：{dateFormatter.format(new Date(project.created_at))}
+              Created: {dateFormatter.format(new Date(project.created_at))}
             </p>
           </Link>
         </li>
@@ -66,14 +68,14 @@ export default function Home() {
   return (
     <main className="flex flex-1 flex-col gap-8 px-4 py-12">
       <section className="flex flex-col gap-4">
-        <h1 className="text-2xl font-semibold">案件の一覧</h1>
+        <h1 className="text-2xl font-semibold">Projects</h1>
         <Suspense fallback={<p className="text-sm text-muted-foreground">…</p>}>
           <ProjectList />
         </Suspense>
       </section>
       <form action={signOut}>
         <Button type="submit" variant="outline">
-          ログアウト
+          Sign out
         </Button>
       </form>
     </main>
