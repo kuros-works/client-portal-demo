@@ -1,16 +1,25 @@
 import { Suspense } from "react";
 
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { requireAdmin } from "@/lib/auth";
+import { formatFileSize } from "@/lib/project-files";
 import { createClient } from "@/lib/supabase/server";
 
 import { signOut } from "../auth/actions";
+import { FileDeleteForm } from "./file-delete-form";
+import { FileUploadForm } from "./file-upload-form";
 import { InviteForm } from "./invite-form";
 import { ProjectForm } from "./project-form";
 import { StatusForm } from "./status-form";
 
 const dateFormatter = new Intl.DateTimeFormat("ja-JP", {
   dateStyle: "medium",
+  timeZone: "Asia/Tokyo",
+});
+
+const dateTimeFormatter = new Intl.DateTimeFormat("ja-JP", {
+  dateStyle: "medium",
+  timeStyle: "short",
   timeZone: "Asia/Tokyo",
 });
 
@@ -31,8 +40,14 @@ async function AdminContent() {
       .order("email"),
     supabase
       .from("projects")
-      .select("id, name, status, created_at, profiles(email)")
-      .order("created_at", { ascending: false }),
+      .select(
+        "id, name, status, created_at, profiles(email), project_files(id, file_name, size, uploaded_at)",
+      )
+      .order("created_at", { ascending: false })
+      .order("uploaded_at", {
+        referencedTable: "project_files",
+        ascending: false,
+      }),
   ]);
 
   if (clientsResult.error) {
@@ -70,18 +85,63 @@ async function AdminContent() {
           {projects.map((project) => (
             <li
               key={project.id}
-              className="flex flex-col gap-3 rounded-lg border p-4 md:flex-row md:items-center md:justify-between"
+              className="flex flex-col gap-4 rounded-lg border p-4"
             >
-              <div className="flex flex-col gap-1">
-                <p className="font-medium">{project.name}</p>
-                <p className="text-sm text-muted-foreground">
-                  {clientEmail(project.profiles)}
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  作成日：{dateFormatter.format(new Date(project.created_at))}
-                </p>
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div className="flex flex-col gap-1">
+                  <p className="font-medium">{project.name}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {clientEmail(project.profiles)}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    作成日：{dateFormatter.format(new Date(project.created_at))}
+                  </p>
+                </div>
+                <div className="flex flex-col gap-3">
+                  <StatusForm projectId={project.id} status={project.status} />
+                  <FileUploadForm projectId={project.id} />
+                </div>
               </div>
-              <StatusForm projectId={project.id} status={project.status} />
+              {project.project_files.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  ファイルはまだありません。
+                </p>
+              ) : (
+                <ul className="flex flex-col divide-y border-t">
+                  {project.project_files.map((file) => (
+                    <li
+                      key={file.id}
+                      className="flex flex-col gap-2 py-3 md:flex-row md:items-center md:justify-between"
+                    >
+                      <div className="flex min-w-0 flex-col gap-1">
+                        <p className="break-all text-sm font-medium">
+                          {file.file_name}
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          {formatFileSize(file.size)}・
+                          {dateTimeFormatter.format(new Date(file.uploaded_at))}
+                        </p>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        {/* Link だと先読みで署名付き URL が作られうるので、普通の a にする */}
+                        <a
+                          href={`/files/${file.id}/download`}
+                          className={buttonVariants({
+                            variant: "outline",
+                            size: "sm",
+                          })}
+                        >
+                          ダウンロード
+                        </a>
+                        <FileDeleteForm
+                          fileId={file.id}
+                          fileName={file.file_name}
+                        />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </li>
           ))}
         </ul>
