@@ -9,7 +9,7 @@ export function getSupabaseEnv() {
 
   if (!url || !publishableKey) {
     throw new Error(
-      `Supabase の環境変数が未設定です: ${missing.join(", ")}。.env.local（本番は Vercel の Environment Variables）に設定してください。`,
+      `Missing Supabase environment variables: ${missing.join(", ")}. Add them to .env.local (in production, to Vercel's Environment Variables).`,
     );
   }
 

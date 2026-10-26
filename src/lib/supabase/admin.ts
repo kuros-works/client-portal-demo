@@ -12,7 +12,7 @@ export function createAdminClient() {
 
   if (!serviceRoleKey) {
     throw new Error(
-      "SUPABASE_SERVICE_ROLE_KEY が未設定です。.env.local（本番は Vercel の Environment Variables）に設定してください。",
+      "SUPABASE_SERVICE_ROLE_KEY is not set. Add it to .env.local (in production, to Vercel's Environment Variables).",
     );
   }
 
