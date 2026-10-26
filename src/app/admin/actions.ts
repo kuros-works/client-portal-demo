@@ -40,6 +40,7 @@ export async function inviteClient(
     return { status: error.code === "email_exists" ? "exists" : "error" };
   }
 
+  revalidatePath("/admin");
   return { status: "invited" };
 }
 
