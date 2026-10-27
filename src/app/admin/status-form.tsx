@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +24,14 @@ export function StatusForm({
     updateProjectStatus,
     initialState,
   );
+  const [value, setValue] = useState(isProjectStatus(status) ? status : "");
+  const [prevStatus, setPrevStatus] = useState(status);
+
+  // Keep the select in sync when the server sends a new status.
+  if (status !== prevStatus) {
+    setPrevStatus(status);
+    setValue(isProjectStatus(status) ? status : "");
+  }
 
   return (
     <form action={formAction} className="flex flex-col gap-2">
@@ -31,13 +39,14 @@ export function StatusForm({
         <input type="hidden" name="project_id" value={projectId} />
         <select
           name="status"
-          defaultValue={isProjectStatus(status) ? status : ""}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
           aria-label="Status"
           className="h-9 rounded-md border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
         >
-          {PROJECT_STATUSES.map((value) => (
-            <option key={value} value={value}>
-              {PROJECT_STATUS_LABELS[value]}
+          {PROJECT_STATUSES.map((option) => (
+            <option key={option} value={option}>
+              {PROJECT_STATUS_LABELS[option]}
             </option>
           ))}
         </select>
