@@ -34,6 +34,31 @@ Also verified in production:
 - When signed out, opening a project or file download URL directly redirects to the sign-in page.
 - A signed download URL stops working once it expires after 60 seconds.
 
+## Building with AI, reviewed by a human
+
+This project was built with Claude Code. I designed the data model and access rules, and reviewed every change myself, especially the SQL and RLS policies.
+
+One example: in `0001_init.sql`, the client read policy on Storage used an unqualified `name` inside a subquery on `projects`. Postgres resolved it to `projects.name` (the project's name) instead of `storage.objects.name` (the file path). The SQL ran without errors and looked correct, but clients could not read any files, including their own.
+
+I found this while testing client downloads and fixed it before any client used the portal. The fix only qualifies the column name:
+
+```sql
+-- before
+where p.id::text = (storage.foldername(name))[1]
+
+-- after
+where p.id::text = (storage.foldername(storage.objects.name))[1]
+```
+
+The fix is in `supabase/migrations/0002_fix_storage_client_policy.sql` (commit `e53fdb7`). After the fix, I confirmed in production that a client can download their own files and gets a 404 for another client's files.
+
+The lesson: AI-written RLS can run without errors and still be wrong, so I test as real users, on both the allowed and the denied side, before shipping.
+
+## Where to look
+
+- RLS policies and table definitions: `supabase/migrations/` (`0001_init.sql` and `0002_fix_storage_client_policy.sql`)
+- File download handling: `src/app/files/[id]/download/route.ts`
+
 ## Tech stack
 
 - [Next.js](https://nextjs.org) 16 (App Router), React 19, TypeScript
