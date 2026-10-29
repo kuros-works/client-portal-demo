@@ -35,28 +35,36 @@
 
 ## テーブル設計
 
-定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正）。
+定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正、0003 が案件ごとの請求の準備）。
 
 - **profiles**：id、email、name、role、created_at
   - id は auth.users(id) への外部キー（削除時は連動して削除）
   - email は必須、name は任意
   - role は `admin` / `client` のどちらか（初期値 `client`）
   - auth.users に行が増えると、トリガー（`on_auth_user_created`）が role = `client` で自動作成する
-- **projects**：id、name、status、client_id、created_at、updated_at
+- **projects**：id、name、status、client_id、created_at、updated_at、amount、payment_status、paid_at、stripe_session_id
   - status は `in_progress` / `in_review` / `delivered`（初期値 `in_progress`）
   - client_id は profiles(id) への外部キー・必須（`on delete restrict`：案件が残っている間はお客様のプロフィールを削除できない）
   - updated_at は更新時にトリガーで自動更新する
+  - amount は usd のセント単位で 50 以上。null は「請求なし」
+  - payment_status は `unpaid` / `paid`（初期値 `unpaid`）。`paid` なら paid_at は必須（制約）
+  - stripe_session_id は一意・null 可
+  - 支払い済み（`paid`）の行は、トリガー（`projects_prevent_paid_amount_change`）で amount を変えられない（service_role も同じ）
 - **project_files**：id、project_id、file_name、storage_path、size、uploaded_at
   - project_id は projects(id) への外部キー（`on delete cascade`：案件を消すと行も消える。Storage の実体は消えない）
   - storage_path は一意。size は 0 以上
+- **stripe_events**：event_id（主キー）、event_type、session_id、amount_total、currency、payment_status、customer_email、received_at
+  - Webhook の二重処理を防ぐため、受け取ったイベントを event_id で記録する
+  - RLS は有効・ポリシーなし。service_role だけが select / insert できる（anon・authenticated には何も与えない）
 - **Storage**：非公開バケット `project-files`（バケットの上限は 1 ファイル 10MB。アプリ側の上限は 4MB）
   - パスは `案件ID/<ファイルID>`（ファイルID は project_files.id と同じ）。元のファイル名は `file_name` 列に保存する
 - **RLS**：3 テーブルと storage.objects で有効。作成・変更・削除・招待は管理者のみ
   - 各テーブルに「admin all」（管理者は全操作）と「client select own」（お客様は閲覧のみ）の 2 つを置く
-  - お客様が見られる範囲：profiles は自分の行、projects は `client_id` が自分の案件、project_files は自分の案件のファイル
-  - Storage は、パスの先頭フォルダが自分の案件ID のファイルだけ読める（0002 で `storage.objects.name` を明示する形に修正済み）
+  - お客様が見られる範囲：profiles は自分の行、projects は `client_id` が自分の案件、project_files は自分の案件のファイル（その案件の amount が null または `paid` のときだけ）
+  - Storage は、パスの先頭フォルダが自分の案件ID のファイルだけ読める（0002 で `storage.objects.name` を明示する形に修正済み。0003 で project_files と同じ支払いの条件を追加）
   - 管理者の判定は `is_admin()`（security definer・`profiles.role` を参照・実行できるのは authenticated のみ）
   - 権限：authenticated と service_role に 3 テーブルの select / insert / update / delete を付与。anon には何も与えない。service_role は RLS を通らない
+  - ただし projects の insert / update は、authenticated では列ごとの権限に絞っている（insert：name、status、client_id、amount / update：status、amount）。payment_status・paid_at・stripe_session_id を書けるのは service_role（Webhook）だけ
 
 ## 守るルール
 
