@@ -79,6 +79,7 @@
   - `signInWithOtp` は `shouldCreateUser: false` で呼ぶ
   - お客様の招待はサーバー側で `service_role` を使って行う
 - 最初の管理者は、Supabase の SQL Editor で手動で `profiles.role` を `admin` に変更する（本番なので実行前に確認を取る）
+- Stripe の Webhook では、案件を `stripe_session_id` ではなく Checkout Session の `metadata.project_id` で特定する
 - `createSignedUrl` の `download` オプションは日本語名を2回エンコードするので使わない。`download` は自分で URL に1回だけ付ける（`src/app/files/[id]/download/route.ts`）
 
 ## 進め方（7段階）
