@@ -18,7 +18,9 @@
 
 ### やらないこと
 
-大きなファイル、Stripe、通知メール、凝ったデザイン、Payload CMS
+大きなファイル、通知メール、凝ったデザイン、Payload CMS
+
+Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分割払い・返金は扱わない
 
 ## 技術
 
@@ -58,12 +60,12 @@
   - RLS は有効・ポリシーなし。service_role だけが select / insert できる（anon・authenticated には何も与えない）
 - **Storage**：非公開バケット `project-files`（バケットの上限は 1 ファイル 10MB。アプリ側の上限は 4MB）
   - パスは `案件ID/<ファイルID>`（ファイルID は project_files.id と同じ）。元のファイル名は `file_name` 列に保存する
-- **RLS**：3 テーブルと storage.objects で有効。作成・変更・削除・招待は管理者のみ
+- **RLS**：4 テーブルと storage.objects で有効。作成・変更・削除・招待は管理者のみ
   - 各テーブルに「admin all」（管理者は全操作）と「client select own」（お客様は閲覧のみ）の 2 つを置く
   - お客様が見られる範囲：profiles は自分の行、projects は `client_id` が自分の案件、project_files は自分の案件のファイル（その案件の amount が null または `paid` のときだけ）
   - Storage は、パスの先頭フォルダが自分の案件ID のファイルだけ読める（0002 で `storage.objects.name` を明示する形に修正済み。0003 で project_files と同じ支払いの条件を追加）
   - 管理者の判定は `is_admin()`（security definer・`profiles.role` を参照・実行できるのは authenticated のみ）
-  - 権限：authenticated と service_role に 3 テーブルの select / insert / update / delete を付与。anon には何も与えない。service_role は RLS を通らない
+  - 権限：authenticated と service_role に profiles・projects・project_files の select / insert / update / delete を付与。anon には何も与えない。service_role は RLS を通らない
   - ただし projects の insert / update は、authenticated では列ごとの権限に絞っている（insert：name、status、client_id、amount / update：status、amount）。payment_status・paid_at・stripe_session_id を書けるのは service_role（Webhook）だけ
 
 ## 守るルール
@@ -92,7 +94,7 @@
 
 ## 進め方（7段階）
 
-0 準備 → 1 土台 → 2 データ設計（テーブル3つと RLS） → 3 ログイン → 4 管理画面 → 5 ファイル → 6 お客様画面 → 7 確認と公開
+0 準備 → 1 土台 → 2 データ設計（テーブル4つと RLS） → 3 ログイン → 4 管理画面 → 5 ファイル → 6 お客様画面 → 7 確認と公開
 
 ## 現在の状態
 
