@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { requireAdmin } from "@/lib/auth";
+import { parseDollarsToCents } from "@/lib/project-amount";
 import { MAX_FILE_SIZE, PROJECT_FILES_BUCKET } from "@/lib/project-files";
 import { isProjectStatus } from "@/lib/project-status";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -121,6 +122,76 @@ export async function updateProjectStatus(
 
   revalidatePath("/admin");
   return { status: "updated" };
+}
+
+export type AmountFormState = {
+  status:
+    | "idle"
+    | "updated"
+    | "cleared"
+    | "invalid"
+    | "too_small"
+    | "paid"
+    | "not_updated"
+    | "error";
+};
+
+export async function updateProjectAmount(
+  _prevState: AmountFormState,
+  formData: FormData,
+): Promise<AmountFormState> {
+  await requireAdmin();
+
+  const projectId = String(formData.get("project_id") ?? "");
+  if (!UUID_PATTERN.test(projectId)) {
+    return { status: "invalid" };
+  }
+
+  // 画面側の確認は信用せず、送られてきた金額をここで必ず検証し直す
+  const amount = parseDollarsToCents(String(formData.get("amount") ?? ""));
+  if (amount === "invalid" || amount === "too_small") {
+    return { status: amount };
+  }
+
+  const supabase = await createClient();
+
+  // 支払い済みの案件は金額を変えない（DB のトリガーでも止まるが、先に確かめる）
+  const { data: project, error: selectError } = await supabase
+    .from("projects")
+    .select("payment_status")
+    .eq("id", projectId)
+    .maybeSingle();
+
+  if (selectError) {
+    console.error("load project payment status failed:", selectError.code);
+    return { status: "error" };
+  }
+  if (!project) {
+    return { status: "not_updated" };
+  }
+  if (project.payment_status === "paid") {
+    return { status: "paid" };
+  }
+
+  const { data, error } = await supabase
+    .from("projects")
+    .update({ amount })
+    .eq("id", projectId)
+    .select("id");
+
+  if (error) {
+    console.error("update project amount failed:", error.code);
+    return { status: "error" };
+  }
+
+  // RLS で弾かれた場合も、エラーにならず 0 件になる
+  if (!data || data.length === 0) {
+    console.error("update project amount affected 0 rows");
+    return { status: "not_updated" };
+  }
+
+  revalidatePath("/admin");
+  return { status: amount === null ? "cleared" : "updated" };
 }
 
 export type UploadFormState = {

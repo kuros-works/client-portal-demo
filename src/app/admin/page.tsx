@@ -7,6 +7,7 @@ import { formatFileSize } from "@/lib/project-files";
 import { createClient } from "@/lib/supabase/server";
 
 import { signOut } from "../auth/actions";
+import { AmountForm } from "./amount-form";
 import { FileDeleteForm } from "./file-delete-form";
 import { FileUploadForm } from "./file-upload-form";
 import { InviteForm } from "./invite-form";
@@ -31,7 +32,7 @@ async function AdminContent() {
     supabase
       .from("projects")
       .select(
-        "id, name, status, created_at, profiles(email), project_files(id, file_name, size, uploaded_at)",
+        "id, name, status, amount, payment_status, created_at, profiles(email), project_files(id, file_name, size, uploaded_at)",
       )
       .order("created_at", { ascending: false })
       .order("uploaded_at", {
@@ -89,6 +90,11 @@ async function AdminContent() {
                 </div>
                 <div className="flex flex-col gap-3">
                   <StatusForm projectId={project.id} status={project.status} />
+                  <AmountForm
+                    projectId={project.id}
+                    amount={project.amount}
+                    paymentStatus={project.payment_status}
+                  />
                   <FileUploadForm projectId={project.id} />
                 </div>
               </div>
