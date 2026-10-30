@@ -9,10 +9,18 @@ import { formatFileSize } from "@/lib/project-files";
 import { PROJECT_STATUS_LABELS, isProjectStatus } from "@/lib/project-status";
 import { createClient } from "@/lib/supabase/server";
 
+import { PayButton } from "./pay-button";
+
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-async function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
+async function ProjectDetail({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
   const { userId, role } = await requireUser();
   if (role === "admin") {
     redirect("/admin");
@@ -29,7 +37,7 @@ async function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
   const { data: project, error } = await supabase
     .from("projects")
     .select(
-      "id, name, status, project_files(id, file_name, size, uploaded_at)",
+      "id, name, status, amount, payment_status, project_files(id, file_name, size, uploaded_at)",
     )
     .eq("id", id)
     .eq("client_id", userId)
@@ -52,6 +60,11 @@ async function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
     notFound();
   }
 
+  // 戻り先の query は表示の出し分けにだけ使う。支払い済みかどうかは DB の値で決める
+  const { payment } = await searchParams;
+  const payable =
+    project.amount !== null && project.payment_status === "unpaid";
+
   return (
     <>
       <div className="flex flex-col gap-1">
@@ -63,6 +76,25 @@ async function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
             : "—"}
         </p>
       </div>
+
+      {payable && payment === "success" && (
+        <p className="rounded-lg border p-4 text-sm">
+          Thank you! We&apos;re confirming your payment. This can take a few
+          moments. Refresh this page if the Pay button is still showing.
+        </p>
+      )}
+      {payable && payment === "cancelled" && (
+        <p className="rounded-lg border p-4 text-sm">
+          Payment was cancelled. You can try again anytime.
+        </p>
+      )}
+
+      {project.payment_status === "paid" && (
+        <p className="text-sm font-medium">Paid</p>
+      )}
+      {payable && (
+        <PayButton projectId={project.id} amount={project.amount} />
+      )}
 
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-semibold">Files</h2>
@@ -108,14 +140,17 @@ async function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
   );
 }
 
-export default function ProjectPage({ params }: PageProps<"/projects/[id]">) {
+export default function ProjectPage({
+  params,
+  searchParams,
+}: PageProps<"/projects/[id]">) {
   return (
     <main className="flex flex-1 flex-col gap-8 px-4 py-12">
       <Link href="/" className="text-sm underline underline-offset-4">
         ← Back to projects
       </Link>
       <Suspense fallback={<p className="text-sm text-muted-foreground">…</p>}>
-        <ProjectDetail params={params} />
+        <ProjectDetail params={params} searchParams={searchParams} />
       </Suspense>
     </main>
   );

@@ -1,7 +1,6 @@
 "use server";
 
-import { headers } from "next/headers";
-
+import { getRequestOrigin } from "@/lib/request-origin";
 import { createClient } from "@/lib/supabase/server";
 
 export type LoginState = {
@@ -17,18 +16,14 @@ export async function sendMagicLink(
     return { status: "invalid" };
   }
 
-  const headersList = await headers();
-  const host = headersList.get("x-forwarded-host") ?? headersList.get("host");
-  const proto =
-    headersList.get("x-forwarded-proto") ??
-    (host?.startsWith("localhost") ? "http" : "https");
+  const origin = await getRequestOrigin();
 
   const supabase = await createClient();
   const { error } = await supabase.auth.signInWithOtp({
     email,
     options: {
       shouldCreateUser: false,
-      emailRedirectTo: `${proto}://${host}/auth/callback`,
+      emailRedirectTo: `${origin}/auth/callback`,
     },
   });
 
