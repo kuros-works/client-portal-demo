@@ -6,6 +6,8 @@ import { getSupabaseEnv } from "./env";
 
 // service_role を使う管理用クライアント。RLS を通らないので、
 // 呼ぶ前に必ず requireAdmin() で管理者を確認すること。
+// ただし Stripe の Webhook（src/app/api/stripe/webhook/route.ts）は、ログインなしで届く。
+// そこでは requireAdmin() の代わりに、署名の確認が通ったあとでだけ呼ぶ。
 export function createAdminClient() {
   const { url } = getSupabaseEnv();
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

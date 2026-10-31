@@ -14,3 +14,16 @@ export function getStripe() {
 
   return new Stripe(secretKey);
 }
+
+// Webhook の署名を確かめるための値（whsec_…）。サーバー側のコードだけで使う。
+export function getStripeWebhookSecret() {
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  if (!webhookSecret) {
+    throw new Error(
+      "STRIPE_WEBHOOK_SECRET is not set. Add it to .env.local (in production, to Vercel's Environment Variables).",
+    );
+  }
+
+  return webhookSecret;
+}

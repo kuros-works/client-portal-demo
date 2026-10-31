@@ -90,6 +90,14 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
   - お客様の招待はサーバー側で `service_role` を使って行う
 - 最初の管理者は、Supabase の SQL Editor で手動で `profiles.role` を `admin` に変更する（本番なので実行前に確認を取る）
 - Stripe の Webhook では、案件を `stripe_session_id` ではなく Checkout Session の `metadata.project_id` で特定する
+- Webhook の受け口は `src/app/api/stripe/webhook/route.ts`（ログインなしで届くので、`src/proxy.ts` の matcher から除外している）
+  - 先に署名を確認する（生の body・`stripe-signature`・`STRIPE_WEBHOOK_SECRET`）。確認できなければ 400 で何もしない
+  - `checkout.session.completed` で `payment_status` が `paid` のときだけ処理する
+  - 順番は「処理済みか確認 → 案件・金額・通貨を確認 → projects を更新 → 最後に `stripe_events` へ記録」。記録を最後にするのは、更新に失敗したまま「処理済み」にならないようにするため
+  - 金額（`amount_total` が `projects.amount` と同じ）と通貨（usd）が合うときだけ `paid` にする。合わない場合、すでに `paid` の案件への 2 件目の支払い、案件が見つからない場合は、`paid` を上書きせず記録だけ残す（返金は手動）
+  - 一時的な失敗は 500（Stripe が送り直す）、送り直しても変わらないものは 200 で終える
+  - `projects` の `payment_status` / `paid_at` / `stripe_session_id` を書くのはこの Webhook（`service_role`）だけ
+- Checkout は `allowed_payment_method_types: ["card"]` だけにする（非同期の支払い方法は Webhook が拾えないため）。`stripe` v23 では `payment_method_types` が Checkout から削除されている
 - `createSignedUrl` の `download` オプションは日本語名を2回エンコードするので使わない。`download` は自分で URL に1回だけ付ける（`src/app/files/[id]/download/route.ts`）
 
 ## 進め方（7段階）
