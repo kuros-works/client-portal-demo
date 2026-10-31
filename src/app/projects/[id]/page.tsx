@@ -64,6 +64,9 @@ async function ProjectDetail({
   const { payment } = await searchParams;
   const payable =
     project.amount !== null && project.payment_status === "unpaid";
+  // 未払いのファイルは RLS で見えない（件数も分からない）。想定外の値でも出さない側に倒す
+  const filesLocked =
+    project.amount !== null && project.payment_status !== "paid";
 
   return (
     <>
@@ -98,7 +101,11 @@ async function ProjectDetail({
 
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-semibold">Files</h2>
-        {project.project_files.length === 0 ? (
+        {filesLocked ? (
+          <p className="text-sm text-muted-foreground">
+            Files will be available after payment.
+          </p>
+        ) : project.project_files.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No files yet.
           </p>
