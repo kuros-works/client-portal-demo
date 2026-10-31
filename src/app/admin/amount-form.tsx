@@ -68,6 +68,11 @@ export function AmountForm({
           {formatCents(amount)} was paid. The amount can no longer be changed.
         </p>
       )}
+      {!paid && amount !== null && (
+        <p className="text-sm text-muted-foreground">
+          Unpaid. The client can&apos;t see files until this is paid.
+        </p>
+      )}
       {state.status === "invalid" && (
         <p className="text-sm text-destructive">
           Please enter a valid amount, like 50.00 (up to{" "}
