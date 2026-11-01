@@ -61,6 +61,7 @@ export async function createCheckoutSession(
   try {
     const session = await getStripe().checkout.sessions.create({
       mode: "payment",
+      locale: "en",
       // 非同期の支払い方法（銀行振込など）は Webhook が拾えないので、カードだけにする
       allowed_payment_method_types: ["card"],
       line_items: [
