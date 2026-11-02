@@ -4,7 +4,7 @@
 
 顧客ポータルの練習用デモ。完成後は Upwork のポートフォリオに載せる。
 
-- GitHub：kuros-works/client-portal-demo（Private）
+- GitHub：kuros-works/client-portal-demo（Public）
 - 本番：https://client-portal-demo-chi.vercel.app
 
 ## 機能
