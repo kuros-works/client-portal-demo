@@ -4,6 +4,14 @@ A secure, invite-only portal where clients can track the status of their project
 
 **Live demo:** https://client-portal-demo-chi.vercel.app
 
+## Demo video
+
+
+
+https://github.com/user-attachments/assets/1b8f6d3c-10af-4172-8b06-106239569cdf
+
+
+
 ## Demo access
 
 Sign-in is invite-only, so the live demo can't be opened without an account. Instead, the project is shown with a video and screenshots. A demo login is available on request.
