@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { connection } from "next/server";
 import { Suspense } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -11,6 +12,8 @@ import { createClient } from "@/lib/supabase/server";
 import { signOut } from "./auth/actions";
 
 async function ProjectList() {
+  // 毎回リクエスト時に描画する。プリレンダー中に Date.now を読む処理が走らないよう、最初に止める
+  await connection();
   const { userId, role } = await requireUser();
   if (role === "admin") {
     redirect("/admin");

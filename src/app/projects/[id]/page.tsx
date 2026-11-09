@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
+import { connection } from "next/server";
 import { Suspense } from "react";
 
 import { buttonVariants } from "@/components/ui/button";
@@ -21,6 +22,8 @@ async function ProjectDetail({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
+  // 毎回リクエスト時に描画する。プリレンダー中に Date.now を読む処理が走らないよう、最初に止める
+  await connection();
   const { userId, role } = await requireUser();
   if (role === "admin") {
     redirect("/admin");

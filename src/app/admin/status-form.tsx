@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useState, useTransition } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -20,10 +20,12 @@ export function StatusForm({
   projectId: string;
   status: string;
 }) {
-  const [state, formAction, pending] = useActionState(
+  const [state, formAction, actionPending] = useActionState(
     updateProjectStatus,
     initialState,
   );
+  const [transitionPending, startTransition] = useTransition();
+  const pending = actionPending || transitionPending;
   const [value, setValue] = useState(isProjectStatus(status) ? status : "");
   const [prevStatus, setPrevStatus] = useState(status);
 
@@ -34,7 +36,16 @@ export function StatusForm({
   }
 
   return (
-    <form action={formAction} className="flex flex-col gap-2">
+    // <form action> だと送信後に React が form.reset() を呼び、選択欄が先頭の値に戻る。
+    // onSubmit で自分で Action を呼べば、リセットされない
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        const formData = new FormData(event.currentTarget);
+        startTransition(() => formAction(formData));
+      }}
+      className="flex flex-col gap-2"
+    >
       <div className="flex items-center gap-2">
         <input type="hidden" name="project_id" value={projectId} />
         <select
