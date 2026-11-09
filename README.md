@@ -25,6 +25,7 @@ To try the payment flow with a demo login, use the Stripe test card `4242 4242 4
 - **Passwordless sign-in** with email magic links. Only invited users can sign in; public sign-up is disabled.
 - **Client view:** clients see only their own projects, each project's status (In progress / In review / Delivered), and its files.
 - **Per-project payments:** an admin can set an amount on a project, and the client pays it with Stripe Checkout. Files stay locked until the project is paid.
+- **Email notifications** (via Resend): the client is emailed when an admin changes a project's status, and the admin is emailed when a payment completes. A failed email never fails the status update or the webhook.
 - **Admin dashboard:** create projects, set amounts, update status, invite clients, and upload, download, or delete files.
 
 ## Payments (Stripe)
@@ -127,6 +128,7 @@ The lesson: AI-written RLS can run without errors and still be wrong, so I test 
 - [Tailwind CSS](https://tailwindcss.com) v4, [shadcn/ui](https://ui.shadcn.com)
 - [Supabase](https://supabase.com) (Auth, Postgres, Storage)
 - [Stripe](https://stripe.com) (Checkout and webhooks)
+- [Resend](https://resend.com) (notification emails)
 - Deployed on [Vercel](https://vercel.com)
 
 ## Running locally
@@ -153,7 +155,12 @@ This project uses **pnpm** only.
    SUPABASE_SERVICE_ROLE_KEY=
    STRIPE_SECRET_KEY=
    STRIPE_WEBHOOK_SECRET=
+   RESEND_API_KEY=
+   NOTIFY_FROM_EMAIL=
+   ADMIN_NOTIFY_EMAIL=
    ```
+
+   `NOTIFY_FROM_EMAIL` must use a domain verified in Resend. `ADMIN_NOTIFY_EMAIL` receives payment notifications. If any email variable is missing, emails are skipped and the app keeps working.
 
    Use a Stripe test-mode secret key for `STRIPE_SECRET_KEY`. `STRIPE_WEBHOOK_SECRET` comes from the next step.
 

@@ -1,6 +1,7 @@
-import type { NextRequest } from "next/server";
+import { after, type NextRequest } from "next/server";
 import type Stripe from "stripe";
 
+import { sendPaymentReceivedEmail } from "@/lib/email";
 import { getStripe, getStripeWebhookSecret } from "@/lib/stripe";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -17,7 +18,7 @@ function respond(status: 200 | 400 | 500) {
 // checkout.session.completed を処理して、返す HTTP ステータスを決める。
 // stripe_events への記録は最後に行う。記録があれば「処理済み」とみなすので、
 // 更新に失敗したまま記録してしまうと、送り直しでも直らなくなる。
-async function handleCheckoutCompleted(event: Stripe.Event) {
+async function handleCheckoutCompleted(event: Stripe.Event, origin: string) {
   const session = event.data.object as Stripe.Checkout.Session;
   const supabase = createAdminClient();
 
@@ -50,7 +51,7 @@ async function handleCheckoutCompleted(event: Stripe.Event) {
   } else {
     const { data: project, error: projectError } = await supabase
       .from("projects")
-      .select("id, amount, payment_status, stripe_session_id")
+      .select("id, name, client_id, amount, payment_status, stripe_session_id")
       .eq("id", projectId)
       .maybeSingle();
 
@@ -96,6 +97,37 @@ async function handleCheckoutCompleted(event: Stripe.Event) {
       if (updateError) {
         console.error("update project payment failed:", updateError.code);
         return respond(500);
+      }
+
+      // 管理者へのメール。このリクエストで paid にできたときだけ送る。
+      // 失敗しても Webhook の結果は変えない（sendPaymentReceivedEmail は例外を投げない）
+      if (updated && updated.length > 0) {
+        const paidProject = {
+          name: project.name,
+          amount: session.amount_total,
+          clientId: project.client_id,
+        };
+        after(async () => {
+          try {
+            const { data: client } = await supabase
+              .from("profiles")
+              .select("email")
+              .eq("id", paidProject.clientId)
+              .maybeSingle();
+
+            await sendPaymentReceivedEmail({
+              projectName: paidProject.name,
+              amountCents: paidProject.amount ?? 0,
+              clientEmail: client?.email ?? null,
+              projectUrl: `${origin}/admin`,
+            });
+          } catch (err) {
+            console.error(
+              "payment email failed:",
+              err instanceof Error ? err.name : "unknown",
+            );
+          }
+        });
       }
 
       if (!updated || updated.length === 0) {
@@ -181,7 +213,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    return await handleCheckoutCompleted(event);
+    return await handleCheckoutCompleted(event, request.nextUrl.origin);
   } catch (err) {
     // お客様の情報が入りうるので、エラーの名前だけ残す
     console.error(
