@@ -1,3 +1,4 @@
+import { connection } from "next/server";
 import { Suspense } from "react";
 
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -20,6 +21,9 @@ function clientEmail(profiles: { email: string } | { email: string }[] | null) {
 }
 
 async function AdminContent() {
+  // 管理画面は毎回リクエスト時に描画する。プリレンダー中に時刻（Date.now）を
+  // 読む処理が走らないよう、最初にここで止める
+  await connection();
   await requireAdmin();
 
   const supabase = await createClient();

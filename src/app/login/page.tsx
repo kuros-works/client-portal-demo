@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { connection } from "next/server";
 import { Suspense } from "react";
 
 import {
@@ -17,6 +18,8 @@ async function LoginContent({
 }: {
   searchParams: Promise<{ error?: string }>;
 }) {
+  // 毎回リクエスト時に描画する。プリレンダー中に Date.now を読む処理が走らないよう、最初に止める
+  await connection();
   const supabase = await createClient();
   const { data } = await supabase.auth.getClaims();
   if (data?.claims) {
