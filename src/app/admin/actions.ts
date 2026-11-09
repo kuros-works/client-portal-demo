@@ -1,11 +1,14 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 
 import { requireAdmin } from "@/lib/auth";
+import { sendStatusChangedEmail } from "@/lib/email";
 import { parseDollarsToCents } from "@/lib/project-amount";
 import { MAX_FILE_SIZE, PROJECT_FILES_BUCKET } from "@/lib/project-files";
 import { isProjectStatus } from "@/lib/project-status";
+import { getRequestOrigin } from "@/lib/request-origin";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
@@ -103,6 +106,15 @@ export async function updateProjectStatus(
   }
 
   const supabase = await createClient();
+
+  // 通知は「ステータスが実際に変わったとき」だけ送るので、変更前の値を読んでおく。
+  // 読めなくても更新は続ける（その場合は通知しない）
+  const { data: before } = await supabase
+    .from("projects")
+    .select("status")
+    .eq("id", projectId)
+    .maybeSingle();
+
   const { data, error } = await supabase
     .from("projects")
     .update({ status })
@@ -118,6 +130,40 @@ export async function updateProjectStatus(
   if (!data || data.length === 0) {
     console.error("update project status affected 0 rows");
     return { status: "not_updated" };
+  }
+
+  // お客様へのメール。失敗しても更新の結果は変えない（sendEmail は例外を投げない）
+  if (before && before.status !== status) {
+    const origin = await getRequestOrigin();
+    after(async () => {
+      try {
+        const { data: project } = await createAdminClient()
+          .from("projects")
+          .select("name, profiles(email)")
+          .eq("id", projectId)
+          .maybeSingle();
+        const profile = Array.isArray(project?.profiles)
+          ? project.profiles[0]
+          : project?.profiles;
+
+        if (!project || !profile?.email) {
+          console.error("status email skipped: client email not found");
+          return;
+        }
+
+        await sendStatusChangedEmail({
+          to: profile.email,
+          projectName: project.name,
+          status,
+          projectUrl: `${origin}/projects/${projectId}`,
+        });
+      } catch (err) {
+        console.error(
+          "status email failed:",
+          err instanceof Error ? err.name : "unknown",
+        );
+      }
+    });
   }
 
   revalidatePath("/admin");
