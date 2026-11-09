@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Bash(cat *.env*)",
+      "Bash(head *.env*)",
+      "Bash(tail *.env*)",
+      "Bash(less *.env*)",
+      "Bash(more *.env*)",
+      "Bash(grep * *.env*)",
+      "Bash(rg * *.env*)",
+      "Bash(sed * *.env*)",
+      "Bash(awk * *.env*)",
+      "Bash(source *.env*)",
+      "Bash(cp *.env* *)"
+    ]
+  }
+}
