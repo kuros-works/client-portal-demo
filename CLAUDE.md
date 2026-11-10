@@ -42,13 +42,14 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 
 ## テーブル設計
 
-定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正、0003 が案件ごとの請求の準備）。
+定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正、0003 が案件ごとの請求の準備、0004 が権限の締め直し）。
 
 - **profiles**：id、email、name、role、created_at
   - id は auth.users(id) への外部キー（削除時は連動して削除）
   - email は必須、name は任意
   - role は `admin` / `client` のどちらか（初期値 `client`）
   - auth.users に行が増えると、トリガー（`on_auth_user_created`）が role = `client` で自動作成する
+  - role は anon・authenticated からは変えられない（トリガー `profiles_prevent_role_change`。client 以外での作成も止める）。管理者への昇格は SQL Editor（postgres）で行う
 - **projects**：id、name、status、client_id、created_at、updated_at、amount、payment_status、paid_at、stripe_session_id
   - status は `in_progress` / `in_review` / `delivered`（初期値 `in_progress`）
   - client_id は profiles(id) への外部キー・必須（`on delete restrict`：案件が残っている間はお客様のプロフィールを削除できない）
@@ -70,8 +71,11 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
   - お客様が見られる範囲：profiles は自分の行、projects は `client_id` が自分の案件、project_files は自分の案件のファイル（その案件の amount が null または `paid` のときだけ）
   - Storage は、パスの先頭フォルダが自分の案件ID のファイルだけ読める（0002 で `storage.objects.name` を明示する形に修正済み。0003 で project_files と同じ支払いの条件を追加）
   - 管理者の判定は `is_admin()`（security definer・`profiles.role` を参照・実行できるのは authenticated のみ）
-  - 権限：authenticated と service_role に profiles・projects・project_files の select / insert / update / delete を付与。anon には何も与えない。service_role は RLS を通らない
-  - ただし projects の insert / update は、authenticated では列ごとの権限に絞っている（insert：name、status、client_id、amount / update：status、amount）。payment_status・paid_at・stripe_session_id を書けるのは service_role（Webhook）だけ
+  - 権限（0004 で「いったん revoke してから、アプリが使う分だけ grant」に整理）：authenticated は profiles が select だけ、projects が select と列ごとの insert / update（delete なし）、project_files が select / insert / delete。anon には何も与えない
+  - service_role は profiles・projects・project_files の select / insert / update / delete（表全体）。RLS を通らない
+  - projects の列ごとの権限（authenticated）：insert は name、status、client_id、amount / update は status、amount。payment_status・paid_at・stripe_session_id を書けるのは service_role（Webhook）だけ
+  - Supabase の初期設定（default privileges）で、新しいテーブルには anon・authenticated に TRUNCATE などが付く。テーブルを足すときは、0004 と同じく revoke してから必要な分だけ grant する
+  - ダッシュボードの「新規テーブルに自動で RLS」が作る `rls_auto_enable()`（event trigger 用・security definer）は migrations に書き起こさない。0004 で PUBLIC・anon・authenticated の実行権限だけ外している
 
 ## 守るルール
 
