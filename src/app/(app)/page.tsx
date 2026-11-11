@@ -3,9 +3,11 @@ import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { Suspense } from "react";
 
+import { PaymentBadge } from "@/components/payment-badge";
+import { ProjectStatusBadge } from "@/components/project-status-badge";
+import { ProjectSteps } from "@/components/project-steps";
 import { requireUser } from "@/lib/auth";
 import { dateFormatter } from "@/lib/format";
-import { PROJECT_STATUS_LABELS, isProjectStatus } from "@/lib/project-status";
 import { createClient } from "@/lib/supabase/server";
 
 async function ProjectList() {
@@ -20,7 +22,7 @@ async function ProjectList() {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("projects")
-    .select("id, name, status, created_at")
+    .select("id, name, status, created_at, amount, payment_status")
     .eq("client_id", userId)
     .order("created_at", { ascending: false });
 
@@ -40,35 +42,44 @@ async function ProjectList() {
   }
 
   return (
-    <ul className="flex flex-col gap-3">
-      {data.map((project) => (
-        <li key={project.id}>
-          <Link
-            href={`/projects/${project.id}`}
-            className="flex flex-col gap-1 rounded-lg border p-4 hover:bg-muted"
-          >
-            <p className="break-all font-medium">{project.name}</p>
-            <p className="text-sm text-muted-foreground">
-              Status:{" "}
-              {isProjectStatus(project.status)
-                ? PROJECT_STATUS_LABELS[project.status]
-                : "—"}
-            </p>
-            <p className="text-sm text-muted-foreground">
-              Created: {dateFormatter.format(new Date(project.created_at))}
-            </p>
-          </Link>
-        </li>
-      ))}
-    </ul>
+    <>
+      <p className="text-sm text-muted-foreground">
+        {data.length} {data.length === 1 ? "project" : "projects"}
+      </p>
+      <ul className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {data.map((project) => (
+          <li key={project.id}>
+            <Link
+              href={`/projects/${project.id}`}
+              className="flex h-full flex-col gap-4 rounded-lg border bg-card p-4 transition-colors hover:bg-muted"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <p className="min-w-0 break-all font-medium">{project.name}</p>
+                <ProjectStatusBadge status={project.status} />
+              </div>
+              <ProjectSteps status={project.status} />
+              <div className="mt-auto flex items-center justify-between gap-2">
+                <p className="text-sm text-muted-foreground">
+                  {dateFormatter.format(new Date(project.created_at))}
+                </p>
+                <PaymentBadge
+                  amount={project.amount}
+                  paymentStatus={project.payment_status}
+                />
+              </div>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 
 export default function Home() {
   return (
     <div className="flex flex-1 flex-col gap-8 px-4 py-12">
-      <section className="flex flex-col gap-4">
-        <h1 className="text-2xl font-semibold">Projects</h1>
+      <section className="flex flex-col gap-2">
+        <h1 className="text-2xl font-medium">Projects</h1>
         <Suspense fallback={<p className="text-sm text-muted-foreground">…</p>}>
           <ProjectList />
         </Suspense>

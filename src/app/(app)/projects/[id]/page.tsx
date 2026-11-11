@@ -1,13 +1,17 @@
+import { ArrowLeft, FileText } from "lucide-react";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { connection } from "next/server";
 import { Suspense } from "react";
 
+import { PaymentBadge } from "@/components/payment-badge";
+import { ProjectStatusBadge } from "@/components/project-status-badge";
+import { ProjectSteps } from "@/components/project-steps";
 import { buttonVariants } from "@/components/ui/button";
 import { requireUser } from "@/lib/auth";
 import { dateTimeFormatter } from "@/lib/format";
+import { formatCents } from "@/lib/project-amount";
 import { formatFileSize } from "@/lib/project-files";
-import { PROJECT_STATUS_LABELS, isProjectStatus } from "@/lib/project-status";
 import { createClient } from "@/lib/supabase/server";
 
 import { PayButton } from "./pay-button";
@@ -73,63 +77,80 @@ async function ProjectDetail({
 
   return (
     <>
-      <div className="flex flex-col gap-1">
-        <h1 className="break-all text-2xl font-semibold">{project.name}</h1>
-        <p className="text-sm text-muted-foreground">
-          Status:{" "}
-          {isProjectStatus(project.status)
-            ? PROJECT_STATUS_LABELS[project.status]
-            : "—"}
-        </p>
+      <div className="flex flex-col gap-4">
+        <div className="flex items-start justify-between gap-3">
+          <h1 className="min-w-0 break-all text-2xl font-medium">
+            {project.name}
+          </h1>
+          <ProjectStatusBadge status={project.status} />
+        </div>
+        <div className="max-w-md">
+          <ProjectSteps status={project.status} />
+        </div>
       </div>
 
       {payable && payment === "success" && (
-        <p className="rounded-lg border p-4 text-sm">
+        <p className="rounded-lg border bg-card p-5 text-sm">
           Thank you! We&apos;re confirming your payment. This can take a few
           moments. Refresh this page if the Pay button is still showing.
         </p>
       )}
       {payable && payment === "cancelled" && (
-        <p className="rounded-lg border p-4 text-sm">
+        <p className="rounded-lg border bg-card p-5 text-sm">
           Payment was cancelled. You can try again anytime.
         </p>
       )}
 
-      {project.payment_status === "paid" && (
-        <p className="text-sm font-medium">Paid</p>
-      )}
-      {payable && (
-        <PayButton projectId={project.id} amount={project.amount} />
+      {project.amount !== null && (
+        <section className="flex flex-col gap-4 rounded-lg border bg-card p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex flex-col gap-1">
+              <p className="text-sm text-muted-foreground">Payment</p>
+              <p className="text-lg font-medium">
+                {formatCents(project.amount)}
+              </p>
+            </div>
+            <PaymentBadge
+              amount={project.amount}
+              paymentStatus={project.payment_status}
+            />
+          </div>
+          {payable && (
+            <PayButton projectId={project.id} amount={project.amount} />
+          )}
+        </section>
       )}
 
-      <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-semibold">Files</h2>
-        {filesLocked ? (
-          <p className="text-sm text-muted-foreground">
-            Files will be available after payment.
-          </p>
-        ) : project.project_files.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No files yet.
-          </p>
-        ) : (
-          <ul className="flex flex-col divide-y border-y">
-            {project.project_files.map((file) => (
-              <li
-                key={file.id}
-                className="flex flex-col gap-2 py-3 md:flex-row md:items-center md:justify-between"
-              >
-                <div className="flex min-w-0 flex-col gap-1">
-                  <p className="break-all text-sm font-medium">
-                    {file.file_name}
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    {formatFileSize(file.size)}
-                    {" · "}
-                    {dateTimeFormatter.format(new Date(file.uploaded_at))}
-                  </p>
-                </div>
-                <div className="flex items-start">
+      <section className="flex flex-col gap-3">
+        <h2 className="text-base font-medium">Files</h2>
+        <div className="rounded-lg border bg-card">
+          {filesLocked ? (
+            <p className="p-4 text-sm text-muted-foreground">
+              Files will be available after payment.
+            </p>
+          ) : project.project_files.length === 0 ? (
+            <p className="p-4 text-sm text-muted-foreground">No files yet.</p>
+          ) : (
+            <ul className="flex flex-col divide-y">
+              {project.project_files.map((file) => (
+                <li
+                  key={file.id}
+                  className="flex items-center gap-3 p-4"
+                >
+                  <FileText
+                    className="size-5 shrink-0 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <p className="break-all text-sm font-medium">
+                      {file.file_name}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {formatFileSize(file.size)}
+                      {" · "}
+                      {dateTimeFormatter.format(new Date(file.uploaded_at))}
+                    </p>
+                  </div>
                   {/* Link だと先読みで署名付き URL が作られうるので、普通の a にする */}
                   <a
                     href={`/files/${file.id}/download`}
@@ -140,11 +161,11 @@ async function ProjectDetail({
                   >
                     Download
                   </a>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </section>
     </>
   );
@@ -156,8 +177,12 @@ export default function ProjectPage({
 }: PageProps<"/projects/[id]">) {
   return (
     <div className="flex flex-1 flex-col gap-8 px-4 py-12">
-      <Link href="/" className="text-sm underline underline-offset-4">
-        ← Back to projects
+      <Link
+        href="/"
+        className="flex w-fit items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ArrowLeft className="size-4" aria-hidden="true" />
+        Back to projects
       </Link>
       <Suspense fallback={<p className="text-sm text-muted-foreground">…</p>}>
         <ProjectDetail params={params} searchParams={searchParams} />
