@@ -155,13 +155,13 @@ export default function ProjectPage({
   searchParams,
 }: PageProps<"/projects/[id]">) {
   return (
-    <main className="flex flex-1 flex-col gap-8 px-4 py-12">
+    <div className="flex flex-1 flex-col gap-8 px-4 py-12">
       <Link href="/" className="text-sm underline underline-offset-4">
         ← Back to projects
       </Link>
       <Suspense fallback={<p className="text-sm text-muted-foreground">…</p>}>
         <ProjectDetail params={params} searchParams={searchParams} />
       </Suspense>
-    </main>
+    </div>
   );
 }

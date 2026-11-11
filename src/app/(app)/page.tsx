@@ -3,13 +3,10 @@ import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { Suspense } from "react";
 
-import { Button } from "@/components/ui/button";
 import { requireUser } from "@/lib/auth";
 import { dateFormatter } from "@/lib/format";
 import { PROJECT_STATUS_LABELS, isProjectStatus } from "@/lib/project-status";
 import { createClient } from "@/lib/supabase/server";
-
-import { signOut } from "./auth/actions";
 
 async function ProjectList() {
   // 毎回リクエスト時に描画する。プリレンダー中に Date.now を読む処理が走らないよう、最初に止める
@@ -69,18 +66,13 @@ async function ProjectList() {
 
 export default function Home() {
   return (
-    <main className="flex flex-1 flex-col gap-8 px-4 py-12">
+    <div className="flex flex-1 flex-col gap-8 px-4 py-12">
       <section className="flex flex-col gap-4">
         <h1 className="text-2xl font-semibold">Projects</h1>
         <Suspense fallback={<p className="text-sm text-muted-foreground">…</p>}>
           <ProjectList />
         </Suspense>
       </section>
-      <form action={signOut}>
-        <Button type="submit" variant="outline">
-          Sign out
-        </Button>
-      </form>
-    </main>
+    </div>
   );
 }

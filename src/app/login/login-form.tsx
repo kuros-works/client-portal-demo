@@ -28,13 +28,14 @@ export function LoginForm() {
   return (
     <form action={formAction} className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
-        <Label htmlFor="email">Email</Label>
+        <Label htmlFor="email" className="text-sm font-medium">Email</Label>
         <Input
           id="email"
           name="email"
           type="email"
           autoComplete="email"
           required
+          className="h-9"
         />
         {state.status === "invalid" && (
           <p className="text-sm text-destructive">
@@ -42,7 +43,7 @@ export function LoginForm() {
           </p>
         )}
       </div>
-      <Button type="submit" disabled={pending} className="w-full">
+      <Button type="submit" disabled={pending} className="h-9 w-full font-medium">
         {pending ? "Sending…" : "Email me a sign-in link"}
       </Button>
     </form>

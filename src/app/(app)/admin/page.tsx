@@ -1,13 +1,12 @@
 import { connection } from "next/server";
 import { Suspense } from "react";
 
-import { Button, buttonVariants } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { requireAdmin } from "@/lib/auth";
 import { dateFormatter, dateTimeFormatter } from "@/lib/format";
 import { formatFileSize } from "@/lib/project-files";
 import { createClient } from "@/lib/supabase/server";
 
-import { signOut } from "../auth/actions";
 import { AmountForm } from "./amount-form";
 import { FileDeleteForm } from "./file-delete-form";
 import { FileUploadForm } from "./file-upload-form";
@@ -158,15 +157,10 @@ async function AdminContent() {
 
 export default function AdminPage() {
   return (
-    <main className="flex flex-1 flex-col gap-8 px-4 py-12">
+    <div className="flex flex-1 flex-col gap-8 px-4 py-12">
       <Suspense fallback={<p className="text-sm text-muted-foreground">…</p>}>
         <AdminContent />
       </Suspense>
-      <form action={signOut}>
-        <Button type="submit" variant="outline">
-          Sign out
-        </Button>
-      </form>
-    </main>
+    </div>
   );
 }
