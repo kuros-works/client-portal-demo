@@ -17,15 +17,16 @@ export function InviteForm() {
   );
 
   return (
-    <form action={formAction} className="flex max-w-sm flex-col gap-4">
+    <form action={formAction} className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
-        <Label htmlFor="email">Client email</Label>
+        <Label htmlFor="email" className="text-sm font-medium">Client email</Label>
         <Input
           id="email"
           name="email"
           type="email"
           autoComplete="off"
           required
+          className="h-9"
         />
         {state.status === "invalid" && (
           <p className="text-sm text-destructive">
@@ -49,7 +50,7 @@ export function InviteForm() {
           </p>
         )}
       </div>
-      <Button type="submit" disabled={pending} className="w-full">
+      <Button type="submit" disabled={pending} className="h-9 w-full font-medium">
         {pending ? "Inviting…" : "Invite"}
       </Button>
     </form>

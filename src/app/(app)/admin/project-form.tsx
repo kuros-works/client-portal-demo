@@ -15,7 +15,7 @@ import { createProject, type ProjectFormState } from "./actions";
 const initialState: ProjectFormState = { status: "idle" };
 
 const selectClassName =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
+  "h-9 w-full rounded-sm border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 
 export type ClientOption = {
   id: string;
@@ -29,13 +29,13 @@ export function ProjectForm({ clients }: { clients: ClientOption[] }) {
   );
 
   return (
-    <form action={formAction} className="flex max-w-sm flex-col gap-4">
+    <form action={formAction} className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
-        <Label htmlFor="project-name">Project name</Label>
-        <Input id="project-name" name="name" required />
+        <Label htmlFor="project-name" className="text-sm font-medium">Project name</Label>
+        <Input id="project-name" name="name" required className="h-9" />
       </div>
       <div className="flex flex-col gap-2">
-        <Label htmlFor="project-client">Client</Label>
+        <Label htmlFor="project-client" className="text-sm font-medium">Client</Label>
         <select
           id="project-client"
           name="client_id"
@@ -59,7 +59,7 @@ export function ProjectForm({ clients }: { clients: ClientOption[] }) {
         )}
       </div>
       <div className="flex flex-col gap-2">
-        <Label htmlFor="project-status">Status</Label>
+        <Label htmlFor="project-status" className="text-sm font-medium">Status</Label>
         <select
           id="project-status"
           name="status"
@@ -89,7 +89,7 @@ export function ProjectForm({ clients }: { clients: ClientOption[] }) {
       {state.status === "created" && (
         <p className="text-sm">Project created.</p>
       )}
-      <Button type="submit" disabled={pending} className="w-full">
+      <Button type="submit" disabled={pending} className="h-9 w-full font-medium">
         {pending ? "Creating…" : "Create project"}
       </Button>
     </form>

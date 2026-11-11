@@ -39,9 +39,9 @@ export function FileUploadForm({ projectId }: { projectId: string }) {
           name="file"
           required
           aria-label="File to upload"
-          className="max-w-xs"
+          className="h-9 min-w-0 flex-1"
         />
-        <Button type="submit" variant="outline" disabled={pending}>
+        <Button type="submit" variant="outline" disabled={pending} className="h-9">
           {pending ? "Uploading…" : "Upload"}
         </Button>
       </div>

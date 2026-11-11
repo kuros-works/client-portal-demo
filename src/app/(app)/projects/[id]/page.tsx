@@ -13,6 +13,7 @@ import { dateTimeFormatter } from "@/lib/format";
 import { formatCents } from "@/lib/project-amount";
 import { formatFileSize } from "@/lib/project-files";
 import { createClient } from "@/lib/supabase/server";
+import { cn } from "@/lib/utils";
 
 import { PayButton } from "./pay-button";
 
@@ -154,10 +155,9 @@ async function ProjectDetail({
                   {/* Link だと先読みで署名付き URL が作られうるので、普通の a にする */}
                   <a
                     href={`/files/${file.id}/download`}
-                    className={buttonVariants({
-                      variant: "outline",
-                      size: "sm",
-                    })}
+                    className={cn(
+                      buttonVariants({ variant: "outline", size: "sm" }),
+                    )}
                   >
                     Download
                   </a>

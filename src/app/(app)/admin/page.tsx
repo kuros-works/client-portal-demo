@@ -1,11 +1,15 @@
+import { FileText } from "lucide-react";
 import { connection } from "next/server";
 import { Suspense } from "react";
 
 import { buttonVariants } from "@/components/ui/button";
+import { PaymentBadge } from "@/components/payment-badge";
+import { ProjectStatusBadge } from "@/components/project-status-badge";
 import { requireAdmin } from "@/lib/auth";
 import { dateFormatter, dateTimeFormatter } from "@/lib/format";
 import { formatFileSize } from "@/lib/project-files";
 import { createClient } from "@/lib/supabase/server";
+import { cn } from "@/lib/utils";
 
 import { AmountForm } from "./amount-form";
 import { FileDeleteForm } from "./file-delete-form";
@@ -56,15 +60,26 @@ async function AdminContent() {
 
   return (
     <>
-      <h1 className="text-2xl font-semibold">Admin</h1>
+      <div className="flex flex-col gap-2">
+        <h1 className="text-2xl font-medium">Admin</h1>
+        <p className="text-sm text-muted-foreground">
+          {projects.length} {projects.length === 1 ? "project" : "projects"}
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
+        <section className="flex flex-col gap-4 rounded-lg border bg-card p-5">
+          <h2 className="text-base font-medium">Create a project</h2>
+          <ProjectForm clients={clients} />
+        </section>
+        <section className="flex flex-col gap-4 rounded-lg border bg-card p-5">
+          <h2 className="text-base font-medium">Invite a client</h2>
+          <InviteForm />
+        </section>
+      </div>
 
       <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-semibold">Create a project</h2>
-        <ProjectForm clients={clients} />
-      </section>
-
-      <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-semibold">Projects</h2>
+        <h2 className="text-base font-medium">Projects</h2>
         {projectsResult.error && (
           <p className="text-sm text-destructive">
             We couldn&apos;t load the projects.
@@ -75,34 +90,43 @@ async function AdminContent() {
             No projects yet.
           </p>
         )}
-        <ul className="flex flex-col gap-3">
+        <ul className="flex flex-col gap-4">
           {projects.map((project) => (
             <li
               key={project.id}
-              className="flex flex-col gap-4 rounded-lg border p-4"
+              className="overflow-hidden rounded-lg border bg-card"
             >
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div className="flex flex-col gap-1">
-                  <p className="font-medium">{project.name}</p>
-                  <p className="text-sm text-muted-foreground">
+              <div className="flex flex-col gap-3 p-5 md:flex-row md:items-start md:justify-between">
+                <div className="flex min-w-0 flex-col gap-1">
+                  <p className="break-all font-medium">{project.name}</p>
+                  <p className="break-all text-sm text-muted-foreground">
                     {clientEmail(project.profiles)}
                   </p>
                   <p className="text-sm text-muted-foreground">
                     Created: {dateFormatter.format(new Date(project.created_at))}
                   </p>
                 </div>
-                <div className="flex flex-col gap-3">
-                  <StatusForm projectId={project.id} status={project.status} />
-                  <AmountForm
-                    projectId={project.id}
+                <div className="flex shrink-0 items-center gap-2">
+                  <ProjectStatusBadge status={project.status} />
+                  <PaymentBadge
                     amount={project.amount}
                     paymentStatus={project.payment_status}
                   />
-                  <FileUploadForm projectId={project.id} />
                 </div>
               </div>
+
+              <div className="grid grid-cols-1 gap-4 border-t bg-muted/40 p-5 lg:grid-cols-3">
+                <StatusForm projectId={project.id} status={project.status} />
+                <AmountForm
+                  projectId={project.id}
+                  amount={project.amount}
+                  paymentStatus={project.payment_status}
+                />
+                <FileUploadForm projectId={project.id} />
+              </div>
+
               {project.project_files.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
+                <p className="border-t p-5 text-sm text-muted-foreground">
                   No files yet.
                 </p>
               ) : (
@@ -110,26 +134,29 @@ async function AdminContent() {
                   {project.project_files.map((file) => (
                     <li
                       key={file.id}
-                      className="flex flex-col gap-2 py-3 md:flex-row md:items-center md:justify-between"
+                      className="flex items-center gap-3 p-4"
                     >
-                      <div className="flex min-w-0 flex-col gap-1">
+                      <FileText
+                        className="size-5 shrink-0 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                         <p className="break-all text-sm font-medium">
                           {file.file_name}
                         </p>
-                        <p className="text-sm text-muted-foreground">
+                        <p className="text-xs text-muted-foreground">
                           {formatFileSize(file.size)}
                           {" · "}
                           {dateTimeFormatter.format(new Date(file.uploaded_at))}
                         </p>
                       </div>
-                      <div className="flex items-start gap-2">
+                      <div className="flex shrink-0 items-start gap-2">
                         {/* Link だと先読みで署名付き URL が作られうるので、普通の a にする */}
                         <a
                           href={`/files/${file.id}/download`}
-                          className={buttonVariants({
-                            variant: "outline",
-                            size: "sm",
-                          })}
+                          className={cn(
+                            buttonVariants({ variant: "outline", size: "sm" }),
+                          )}
                         >
                           Download
                         </a>
@@ -145,11 +172,6 @@ async function AdminContent() {
             </li>
           ))}
         </ul>
-      </section>
-
-      <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-semibold">Invite a client</h2>
-        <InviteForm />
       </section>
     </>
   );

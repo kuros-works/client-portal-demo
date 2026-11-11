@@ -53,7 +53,7 @@ export function StatusForm({
           value={value}
           onChange={(event) => setValue(event.target.value)}
           aria-label="Status"
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+          className="h-9 rounded-sm border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
         >
           {PROJECT_STATUSES.map((option) => (
             <option key={option} value={option}>
@@ -61,7 +61,7 @@ export function StatusForm({
             </option>
           ))}
         </select>
-        <Button type="submit" variant="outline" disabled={pending}>
+        <Button type="submit" variant="outline" disabled={pending} className="h-9">
           {pending ? "Updating…" : "Update"}
         </Button>
       </div>
