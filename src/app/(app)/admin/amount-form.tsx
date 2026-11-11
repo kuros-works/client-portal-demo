@@ -53,23 +53,23 @@ export function AmountForm({
           placeholder="No invoice"
           aria-label="Amount (USD)"
           disabled={paid}
-          className="w-32"
+          className="h-9 w-32"
         />
         {paid ? (
           <span className="text-sm font-medium">Paid</span>
         ) : (
-          <Button type="submit" variant="outline" disabled={pending}>
+          <Button type="submit" variant="outline" disabled={pending} className="h-9">
             {pending ? "Saving…" : "Save"}
           </Button>
         )}
       </div>
       {paid && amount !== null && (
-        <p className="text-sm text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {formatCents(amount)} was paid. The amount can no longer be changed.
         </p>
       )}
       {!paid && amount !== null && (
-        <p className="text-sm text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           Unpaid. The client can&apos;t see files until this is paid.
         </p>
       )}
