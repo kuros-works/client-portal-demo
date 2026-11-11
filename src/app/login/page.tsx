@@ -1,3 +1,4 @@
+import { LayoutDashboard } from "lucide-react";
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { Suspense } from "react";
@@ -46,11 +47,17 @@ export default function LoginPage({
   searchParams: Promise<{ error?: string }>;
 }) {
   return (
-    <main className="flex flex-1 items-center justify-center px-4 py-12">
-      <Card className="w-full max-w-sm">
+    <main className="flex flex-1 flex-col items-center justify-center gap-6 bg-muted px-4 py-12">
+      <div className="flex items-center gap-3">
+        <div className="flex size-8 items-center justify-center rounded-sm bg-primary text-white">
+          <LayoutDashboard className="size-4" aria-hidden="true" />
+        </div>
+        <span className="text-base font-medium">Client Portal</span>
+      </div>
+      <Card className="w-full max-w-sm rounded-lg border shadow-sm ring-0 [--card-spacing:--spacing(8)]">
         <CardHeader>
-          <CardTitle>Sign in</CardTitle>
-          <CardDescription>
+          <CardTitle className="text-2xl font-medium">Sign in</CardTitle>
+          <CardDescription className="text-sm text-muted-foreground">
             We&apos;ll email you a link to sign in.
           </CardDescription>
         </CardHeader>
