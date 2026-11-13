@@ -8,7 +8,7 @@ import { sendStatusChangedEmail } from "@/lib/email";
 import { parseDollarsToCents } from "@/lib/project-amount";
 import { MAX_FILE_SIZE, PROJECT_FILES_BUCKET } from "@/lib/project-files";
 import { isProjectStatus } from "@/lib/project-status";
-import { getRequestOrigin } from "@/lib/request-origin";
+import { getSiteUrl } from "@/lib/site-url";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
@@ -134,9 +134,10 @@ export async function updateProjectStatus(
 
   // お客様へのメール。失敗しても更新の結果は変えない（sendEmail は例外を投げない）
   if (before && before.status !== status) {
-    const origin = await getRequestOrigin();
     after(async () => {
       try {
+        // SITE_URL が未設定でも更新は成功のまま。ここで失敗してもログだけ残す
+        const siteUrl = getSiteUrl();
         const { data: project } = await createAdminClient()
           .from("projects")
           .select("name, profiles(email)")
@@ -155,7 +156,7 @@ export async function updateProjectStatus(
           to: profile.email,
           projectName: project.name,
           status,
-          projectUrl: `${origin}/projects/${projectId}`,
+          projectUrl: `${siteUrl}/projects/${projectId}`,
         });
       } catch (err) {
         console.error(

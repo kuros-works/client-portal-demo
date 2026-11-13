@@ -3,7 +3,7 @@
 import { redirect } from "next/navigation";
 
 import { requireUser } from "@/lib/auth";
-import { getRequestOrigin } from "@/lib/request-origin";
+import { getSiteUrl } from "@/lib/site-url";
 import { getStripe } from "@/lib/stripe";
 import { createClient } from "@/lib/supabase/server";
 
@@ -54,8 +54,7 @@ export async function createCheckoutSession(
     return { status: "unavailable" };
   }
 
-  const origin = await getRequestOrigin();
-  const returnUrl = `${origin}/projects/${project.id}`;
+  const returnUrl = `${getSiteUrl()}/projects/${project.id}`;
 
   let checkoutUrl: string | null;
   try {

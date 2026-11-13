@@ -1,6 +1,6 @@
 "use server";
 
-import { getRequestOrigin } from "@/lib/request-origin";
+import { getSiteUrl } from "@/lib/site-url";
 import { createClient } from "@/lib/supabase/server";
 
 export type LoginState = {
@@ -16,14 +16,15 @@ export async function sendMagicLink(
     return { status: "invalid" };
   }
 
-  const origin = await getRequestOrigin();
+  // リダイレクト先はリクエストヘッダーではなく、固定の環境変数から作る
+  const siteUrl = getSiteUrl();
 
   const supabase = await createClient();
   const { error } = await supabase.auth.signInWithOtp({
     email,
     options: {
       shouldCreateUser: false,
-      emailRedirectTo: `${origin}/auth/callback`,
+      emailRedirectTo: `${siteUrl}/auth/callback`,
     },
   });
 
