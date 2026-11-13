@@ -29,7 +29,8 @@ export async function GET(
 ) {
   const supabase = await createClient();
   const { data } = await supabase.auth.getClaims();
-  if (!data?.claims.sub) {
+  const userId = data?.claims.sub;
+  if (!userId) {
     return redirectTo(new URL("/login", request.url).toString());
   }
 
@@ -38,10 +39,11 @@ export async function GET(
     return notFound();
   }
 
-  // RLS により、管理者は全件、お客様は自分の案件のファイルだけが見える
+  // RLS により、管理者は全件、お客様は自分の案件のファイルだけが見える。
+  // ここではコードでも持ち主を確かめるので、案件の client_id も一緒に読む
   const { data: file, error } = await supabase
     .from("project_files")
-    .select("file_name, storage_path")
+    .select("file_name, storage_path, projects(client_id)")
     .eq("id", id)
     .maybeSingle();
 
@@ -54,6 +56,26 @@ export async function GET(
   }
   if (!file) {
     return notFound();
+  }
+
+  // RLS とは別に、管理者か、案件の持ち主だけを通す。
+  // 役割は DB の profiles.role で確認し、読めなければ client として扱う
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", userId)
+    .maybeSingle();
+  if (profileError) {
+    console.error("profile lookup failed:", profileError.code);
+  }
+
+  if (profile?.role !== "admin") {
+    const project = Array.isArray(file.projects)
+      ? file.projects[0]
+      : file.projects;
+    if (project?.client_id !== userId) {
+      return notFound();
+    }
   }
 
   const { data: signed, error: signError } = await supabase.storage
