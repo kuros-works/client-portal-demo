@@ -1,4 +1,4 @@
-// ローカル専用ガード：接続先とキーを確認してから、admin クライアントを返す。
+// ローカル専用ガード：接続先とキーを確認してから、クライアントを返す。
 // .env.local や process.env は読まない。読むのは .env.seed.local だけ。
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -33,31 +33,35 @@ function parseEnvFile(path) {
   return out;
 }
 
-// 旧形式（JWT）：iss が supabase-demo の service_role だけ通す
-function isLocalServiceJwt(key) {
+// 旧形式（JWT）：iss が supabase-demo で、role が一致するものだけ通す
+function isLocalJwt(key, role) {
   const parts = key.split(".");
   if (parts.length !== 3) return false;
   try {
     const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-    return payload.iss === "supabase-demo" && payload.role === "service_role";
+    return payload.iss === "supabase-demo" && payload.role === role;
   } catch {
     return false;
   }
 }
 
-// 新形式は sb_secret_ で始まるものだけ通す（中身は検証できないのでホストの確認が本命）
-function isAcceptedKey(key) {
-  return key.startsWith("sb_secret_") || isLocalServiceJwt(key);
+// 新形式は接頭辞だけ確認する（中身は検証できないのでホストの確認が本命）
+function isAcceptedServiceKey(key) {
+  return key.startsWith("sb_secret_") || isLocalJwt(key, "service_role");
+}
+function isAcceptedAnonKey(key) {
+  return key.startsWith("sb_publishable_") || isLocalJwt(key, "anon");
 }
 
 // 全リクエストの直前にもホストを確認する（万一 URL が差し替わっても止める）
-function localOnlyFetch(input, init) {
+export function localOnlyFetch(input, init) {
   const raw = typeof input === "string" ? input : (input.url ?? String(input));
   assertLocalHost(new URL(raw).hostname);
   return fetch(input, init);
 }
 
-export async function createLocalAdminClient() {
+// 接続先とキーを確認して、設定を返す。requireAnon: true なら anon キーも確認する
+export async function loadLocalConfig({ requireAnon = false } = {}) {
   if (!existsSync(ENV_FILE)) {
     fail(".env.seed.local not found. Run: pnpm supabase status -o env > .env.seed.local");
   }
@@ -78,9 +82,19 @@ export async function createLocalAdminClient() {
   const keys = [env.SERVICE_ROLE_KEY, env.SECRET_KEY].filter(Boolean);
   if (keys.length === 0) fail("no service key found (SERVICE_ROLE_KEY / SECRET_KEY)");
   for (const key of keys) {
-    if (!isAcceptedKey(key)) fail("service key is not a local-Supabase key");
+    if (!isAcceptedServiceKey(key)) fail("service key is not a local-Supabase key");
   }
   const serviceKey = env.SERVICE_ROLE_KEY ?? env.SECRET_KEY;
+
+  let anonKey = null;
+  if (requireAnon) {
+    const anonKeys = [env.ANON_KEY, env.PUBLISHABLE_KEY].filter(Boolean);
+    if (anonKeys.length === 0) fail("no anon key found (ANON_KEY / PUBLISHABLE_KEY)");
+    for (const key of anonKeys) {
+      if (!isAcceptedAnonKey(key)) fail("anon key is not a local-Supabase key");
+    }
+    anonKey = env.ANON_KEY ?? env.PUBLISHABLE_KEY;
+  }
 
   // 3. ローカル Supabase が動いているか
   try {
@@ -93,8 +107,16 @@ export async function createLocalAdminClient() {
     fail("cannot reach local Supabase. Is `pnpm supabase start` running?");
   }
 
-  return createClient(url.origin, serviceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-    global: { fetch: localOnlyFetch },
-  });
+  // どのキーのクライアントも、ホスト確認つきの fetch を通す
+  const makeClient = (key) =>
+    createClient(url.origin, key, {
+      auth: { autoRefreshToken: false, persistSession: false },
+      global: { fetch: localOnlyFetch },
+    });
+  return { url: url.origin, serviceKey, anonKey, makeClient, fetch: localOnlyFetch };
+}
+
+export async function createLocalAdminClient() {
+  const { makeClient, serviceKey } = await loadLocalConfig();
+  return makeClient(serviceKey);
 }

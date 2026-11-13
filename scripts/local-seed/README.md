@@ -38,3 +38,25 @@ node scripts/local-seed/seed.mjs
 - ローカル Supabase が応答しなければ終了する。
 - すべての通信の直前にも、ホストを確認する。
 - 消すのは `@seed.test` のユーザーに紐づくものだけ。
+
+## verify-rls.mjs（RLS の検証）
+
+先に seed.mjs でテストデータを作ってから実行する。
+
+```bash
+node scripts/local-seed/verify-rls.mjs
+```
+
+- anon・会社A・会社B・管理者の立場で、読み取り・書き込み・Storage・RPC を試し、表で PASS / FAIL を出す。
+- 攻撃役は anon キー＋パスワードログインだけ。service_role は、準備・書き込み後の読み直し・このスクリプトが作った Storage の残骸の掃除にだけ使う。
+- FAIL が出ても、RLS や migrations は直さない。報告だけ。
+- 結果は `scripts/local-seed/reports/verify-rls-latest.md` に保存される（git 無視。キー・パスワード・トークンは書かない）。
+- 終了コードは、FAIL があれば 1。
+
+### テストでデータが変わってしまったとき
+
+書き込みの検証が破れてデータが変わった場合は、seed.mjs で作り直せる。
+
+```bash
+node scripts/local-seed/seed.mjs
+```
