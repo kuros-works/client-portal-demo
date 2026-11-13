@@ -2,8 +2,9 @@ import { after, type NextRequest } from "next/server";
 import type Stripe from "stripe";
 
 import { sendPaymentReceivedEmail } from "@/lib/email";
+import { getSiteUrl } from "@/lib/site-url";
 import { getStripe, getStripeWebhookSecret } from "@/lib/stripe";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { getWebhookAdminClient } from "@/lib/supabase/admin";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -18,9 +19,10 @@ function respond(status: 200 | 400 | 500) {
 // checkout.session.completed を処理して、返す HTTP ステータスを決める。
 // stripe_events への記録は最後に行う。記録があれば「処理済み」とみなすので、
 // 更新に失敗したまま記録してしまうと、送り直しでも直らなくなる。
-async function handleCheckoutCompleted(event: Stripe.Event, origin: string) {
+async function handleCheckoutCompleted(event: Stripe.Event) {
   const session = event.data.object as Stripe.Checkout.Session;
-  const supabase = createAdminClient();
+  // 署名の確認が通ったイベントだけがここに来る（POST で constructEvent のあとに呼ぶ）
+  const supabase = getWebhookAdminClient();
 
   // 処理済みのイベントは何もしない
   const { data: recorded, error: recordedError } = await supabase
@@ -109,6 +111,15 @@ async function handleCheckoutCompleted(event: Stripe.Event, origin: string) {
         };
         after(async () => {
           try {
+            // SITE_URL が未設定でも支払いの記録は成功のまま。メールだけ送らず、ログを残す
+            let siteUrl: string;
+            try {
+              siteUrl = getSiteUrl();
+            } catch {
+              console.error("payment email skipped: SITE_URL is not set");
+              return;
+            }
+
             const { data: client } = await supabase
               .from("profiles")
               .select("email")
@@ -119,7 +130,7 @@ async function handleCheckoutCompleted(event: Stripe.Event, origin: string) {
               projectName: paidProject.name,
               amountCents: paidProject.amount ?? 0,
               clientEmail: client?.email ?? null,
-              projectUrl: `${origin}/admin`,
+              projectUrl: `${siteUrl}/admin`,
             });
           } catch (err) {
             console.error(
@@ -213,7 +224,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    return await handleCheckoutCompleted(event, request.nextUrl.origin);
+    return await handleCheckoutCompleted(event);
   } catch (err) {
     // お客様の情報が入りうるので、エラーの名前だけ残す
     console.error(

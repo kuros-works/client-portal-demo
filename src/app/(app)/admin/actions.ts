@@ -9,7 +9,7 @@ import { parseDollarsToCents } from "@/lib/project-amount";
 import { MAX_FILE_SIZE, PROJECT_FILES_BUCKET } from "@/lib/project-files";
 import { isProjectStatus } from "@/lib/project-status";
 import { getSiteUrl } from "@/lib/site-url";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { requireAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
 const UUID_PATTERN =
@@ -32,7 +32,7 @@ export async function inviteClient(
     return { status: "invalid" };
   }
 
-  const supabase = createAdminClient();
+  const supabase = await requireAdminClient();
   const { error } = await supabase.auth.admin.createUser({
     email,
     email_confirm: true,
@@ -134,11 +134,13 @@ export async function updateProjectStatus(
 
   // お客様へのメール。失敗しても更新の結果は変えない（sendEmail は例外を投げない）
   if (before && before.status !== status) {
+    // 管理者の確認は after() の外で済ませ、after() の中ではそのクライアントを使う
+    const adminClient = await requireAdminClient();
     after(async () => {
       try {
         // SITE_URL が未設定でも更新は成功のまま。ここで失敗してもログだけ残す
         const siteUrl = getSiteUrl();
-        const { data: project } = await createAdminClient()
+        const { data: project } = await adminClient
           .from("projects")
           .select("name, profiles(email)")
           .eq("id", projectId)
