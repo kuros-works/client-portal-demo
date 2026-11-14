@@ -6,13 +6,46 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadLocalConfig } from "./guard.mjs";
+import pg from "pg";
+import { loadLocalConfig, loadLocalDbConfig } from "./guard.mjs";
+
+// ---------- 列の読み取り（SELECT）の期待値 ----------
+// ロールごと・テーブルごとに「読めてよい列」。これ以外の列が読める、または足りなければ FAIL。
+// authenticated は client-a・client-b・admin の共通（同じロールなので、列の権限も同じ）。
+// 行の範囲は RLS が決めるので、ここでは列だけを見る。
+const EXPECTED_READABLE_COLUMNS = deepFreeze({
+  anon: {
+    profiles: [],
+    projects: [],
+    project_files: [],
+    stripe_events: [],
+  },
+  authenticated: {
+    profiles: ["id", "email", "name", "role", "created_at"],
+    projects: [
+      "id", "name", "status", "client_id", "created_at", "updated_at",
+      "amount", "payment_status", "paid_at", "stripe_session_id",
+    ],
+    project_files: ["id", "project_id", "file_name", "storage_path", "size", "uploaded_at"],
+    stripe_events: [],
+  },
+});
+const PUBLIC_TABLES = Object.keys(EXPECTED_READABLE_COLUMNS.authenticated);
+// 陽性対照（--positive-control）で期待値に足す、存在しない列
+const CONTROL_FAKE_COLUMN = "__control_missing__";
+const DEFAULT_CONTROL_TARGET = "projects.stripe_session_id";
+
+function deepFreeze(o) {
+  for (const v of Object.values(o)) if (v && typeof v === "object") deepFreeze(v);
+  return Object.freeze(o);
+}
 
 const DOMAIN = "@seed.test";
 const BUCKET = "project-files";
 const SEED_PASSWORD = "seed-local-only-pw"; // seed.mjs と同じ値
 const REPORT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "reports");
 const REPORT_FILE = resolve(REPORT_DIR, "verify-rls-latest.md");
+const CONTROL_REPORT_FILE = resolve(REPORT_DIR, "verify-rls-control.md");
 // migrations（0001・0003・0004）にある public の関数
 const KNOWN_RPC = [
   "is_admin", "handle_new_user", "set_updated_at",
@@ -195,9 +228,10 @@ async function runAnon() {
   const some = projects[0];
   const file = files[0];
 
-  for (const table of ["profiles", "projects", "project_files", "stripe_events"]) {
+  // 列の読み取りの確認も兼ねる（行が返らなければ、どの列も読めない）
+  for (const table of PUBLIC_TABLES) {
     const r = await attempt(() => anon.from(table).select("*"));
-    record(role, `select ${table}`, "denied (error or 0 rows)", describe(r), isDenied(r));
+    record(role, `select * ${table} (rows and columns)`, "denied (error or 0 rows)", describe(r), isDenied(r));
   }
   await writeTest(role, "insert projects", () =>
     anon.from("projects").insert({ name: "verify-probe", status: "in_progress", client_id: ids.a }).select());
@@ -436,6 +470,170 @@ async function runAdmin() {
   record(role, "rpc is_admin", "true", who.error ? describe(who) : `data=${who.data}`, !who.error && who.data === true);
 }
 
+// ---------- 列の読み取り（SELECT）の確認 ----------
+// ctx = { expected: 期待値, control: null または { table, column }（陽性対照） }
+
+const listText = (cols) => (cols.length ? [...cols].sort().join(", ") : "(none)");
+
+function diffColumns(expected, actual) {
+  const e = new Set(expected);
+  const a = new Set(actual);
+  return {
+    extra: [...a].filter((c) => !e.has(c)).sort(),
+    missing: [...e].filter((c) => !a.has(c)).sort(),
+  };
+}
+
+// 期待値と実際の列を比べて記録する。
+// 陽性対照の対象（authenticated の指定テーブル）だけは、仕込んだ差を「検出できたら」PASS
+function recordColumnCheck(ctx, role, group, table, op, actual, problem = "") {
+  const expected = ctx.expected[group][table];
+  const { extra, missing } = diffColumns(expected, actual);
+  const diffText = [
+    extra.length ? `extra: ${extra.join(", ")}` : "",
+    missing.length ? `missing: ${missing.join(", ")}` : "",
+  ].filter(Boolean).join(" | ");
+
+  const isTarget = ctx.control && group === "authenticated" && table === ctx.control.table;
+  if (isTarget) {
+    const detected =
+      !problem &&
+      sameSet(extra, [ctx.control.column]) && extra.length === 1 &&
+      sameSet(missing, [CONTROL_FAKE_COLUMN]) && missing.length === 1;
+    record(role, `[control] ${op}`,
+      `FAIL detected (extra: ${ctx.control.column} | missing: ${CONTROL_FAKE_COLUMN})`,
+      diffText ? `detected → ${diffText}` : "NOT detected (columns matched)", detected,
+      detected ? "" : `the column check did not catch the planted difference${problem ? `; ${problem}` : ""}`);
+    return;
+  }
+  record(role, op, listText(expected), diffText || `match (${actual.length} columns)`,
+    !diffText && !problem, problem);
+}
+
+// 1. 権限：information_schema.columns の全列について has_column_privilege（表全体の権限も含む）
+const GRANTS_SQL = `
+  select c.table_name::text  as table_name,
+         c.column_name::text as column_name,
+         r.role              as role,
+         has_column_privilege(r.role::name,
+                              format('%I.%I', c.table_schema, c.table_name),
+                              c.column_name::text, 'SELECT') as can_select
+  from information_schema.columns c
+  cross join (values ('anon'), ('authenticated')) as r(role)
+  where c.table_schema = 'public'
+  order by 1, 2, 3`;
+
+async function runColumnGrants(ctx) {
+  const db = loadLocalDbConfig(); // 127.0.0.1 以外なら、ここで終了する
+  secrets.push(db.password);
+  const client = new pg.Client({ ...db, connectionTimeoutMillis: 5000, application_name: "verify-rls" });
+  let rows;
+  try {
+    await client.connect();
+    await client.query("set default_transaction_read_only = on"); // 読むだけ
+    rows = (await client.query(GRANTS_SQL)).rows;
+  } catch (e) {
+    record("grants", "query column privileges (local Postgres)", "query succeeds",
+      `error: ${String(e.message).slice(0, 70)}`, false);
+    return;
+  } finally {
+    await client.end().catch(() => {});
+  }
+
+  if (rows.length === 0) {
+    record("grants", "information_schema.columns (public)", "columns listed", "0 rows", false,
+      "cannot check column privileges without the column list");
+    return;
+  }
+
+  // public にあるテーブル（とビュー）は、期待値にある 4 つだけのはず
+  const tables = [...new Set(rows.map((r) => r.table_name))].sort();
+  const unknown = tables.filter((t) => !PUBLIC_TABLES.includes(t));
+  const absent = PUBLIC_TABLES.filter((t) => !tables.includes(t));
+  const unknownReadable = unknown.map((t) => {
+    const readable = (role) => rows.filter((r) => r.table_name === t && r.role === role && r.can_select).length;
+    return `${t} (anon ${readable("anon")}, authenticated ${readable("authenticated")} readable columns)`;
+  });
+  record("grants", "tables and views in public", listText(PUBLIC_TABLES), listText(tables),
+    unknown.length === 0 && absent.length === 0,
+    [unknown.length ? `not in expected list: ${unknownReadable.join("; ")}` : "",
+      absent.length ? `missing: ${absent.join(", ")}` : ""].filter(Boolean).join(" | "));
+
+  for (const group of ["anon", "authenticated"]) {
+    for (const table of PUBLIC_TABLES) {
+      const actual = rows
+        .filter((r) => r.role === group && r.table_name === table && r.can_select)
+        .map((r) => r.column_name);
+      recordColumnCheck(ctx, `grants:${group}`, group, table, `SELECT privilege: ${table} columns`, actual);
+    }
+  }
+}
+
+// 2. 実際の読み取り：ログインして select * し、返ってきた列名を比べる
+async function runColumnReads(ctx) {
+  const users = [
+    ["client-a", `client-a${DOMAIN}`],
+    ["client-b", `client-b${DOMAIN}`],
+    ["admin", `admin${DOMAIN}`],
+  ];
+  for (const [role, email] of users) {
+    const c = await signIn(email);
+    for (const table of PUBLIC_TABLES) {
+      const expected = ctx.expected.authenticated[table];
+      const op = `select * ${table}: returned columns`;
+      const r = await attempt(() => c.from(table).select("*"));
+
+      // 読めてよい列がないテーブル：エラーか 0 件なら PASS
+      if (expected.length === 0) {
+        const keys = !r.error && Array.isArray(r.data) ? [...new Set(r.data.flatMap(Object.keys))] : [];
+        record(role, op, "no columns readable (error or 0 rows)", describe(r), isDenied(r),
+          keys.length ? `returned columns: ${listText(keys)}` : "");
+        continue;
+      }
+
+      // 1 行も返らなければ、列を確かめられないので FAIL
+      if (r.error || !Array.isArray(r.data) || r.data.length === 0) {
+        const isTarget = ctx.control && table === ctx.control.table;
+        record(role, isTarget ? `[control] ${op}` : op, listText(expected), describe(r), false,
+          "no rows returned, so the column check could not run");
+        continue;
+      }
+
+      // 全行の列名がそろっているかも見る
+      const shapes = new Set(r.data.map((row) => Object.keys(row).sort().join(",")));
+      const actual = [...new Set(r.data.flatMap(Object.keys))];
+      recordColumnCheck(ctx, role, "authenticated", table, `${op} (${r.data.length} rows)`, actual,
+        shapes.size === 1 ? "" : `rows have different column sets (${shapes.size} shapes)`);
+    }
+  }
+}
+
+async function runColumnChecks(ctx) {
+  await runColumnGrants(ctx);
+  await runColumnReads(ctx);
+}
+
+// --positive-control[=table.column]：期待値の写しから 1 列を抜き、存在しない列を 1 つ足して、
+// 列の確認が FAIL を出せることを確かめる。本物の期待値（EXPECTED_READABLE_COLUMNS）は変えない
+function parseControlArg(argv) {
+  const arg = argv.find((a) => a === "--positive-control" || a.startsWith("--positive-control="));
+  if (!arg) return null;
+  const target = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : DEFAULT_CONTROL_TARGET;
+  const [table, column, rest] = target.split(".");
+  if (!table || !column || rest !== undefined ||
+      !EXPECTED_READABLE_COLUMNS.authenticated[table]?.includes(column)) {
+    throw new Error(
+      `--positive-control: "${target}" is not a column in the authenticated expected list (use table.column)`);
+  }
+  return { table, column };
+}
+
+function buildControlExpected({ table, column }) {
+  const copy = structuredClone(EXPECTED_READABLE_COLUMNS);
+  copy.authenticated[table] = copy.authenticated[table].filter((c) => c !== column).concat(CONTROL_FAKE_COLUMN);
+  return copy;
+}
+
 // ---------- 公開されている RPC の一覧 ----------
 // /rest/v1/ の OpenAPI から /rpc/ の関数名を取る。取れなければ null
 async function fetchRpcNames(headers) {
@@ -501,7 +699,7 @@ async function runCleanupCheck(initial) {
 }
 
 // ---------- 出力 ----------
-function report() {
+function report({ file = REPORT_FILE, mode = "full" } = {}) {
   const pass = results.filter((r) => r.result === "PASS").length;
   const fail = results.length - pass;
   console.table(results.map(({ role, op, expect, actual, result }) => ({ role, op, expect, actual, result })));
@@ -514,6 +712,7 @@ function report() {
     "# RLS verification report", "",
     `- Run at: ${new Date().toISOString()}`,
     `- Target: local Supabase (${cfg.url})`,
+    `- Mode: ${mode}`,
     `- Result: ${pass} PASS / ${fail} FAIL (total ${results.length})`, "",
     "| Role | Operation | Expected | Actual | Result |", "|---|---|---|---|---|",
     ...results.map((r) => `| ${esc(r.role)} | ${esc(r.op)} | ${esc(r.expect)} | ${esc(r.actual)} | ${r.result} |`), "",
@@ -525,17 +724,29 @@ function report() {
     "## Rebuild", "", "If a test changed data, rebuild with `node scripts/local-seed/seed.mjs`.",
     "This script never changes RLS policies or migrations.", "");
   mkdirSync(REPORT_DIR, { recursive: true });
-  writeFileSync(REPORT_FILE, redact(lines.join("\n")));
-  console.log("report: scripts/local-seed/reports/verify-rls-latest.md");
+  writeFileSync(file, redact(lines.join("\n")));
+  console.log(`report: scripts/local-seed/reports/${file.split("/").pop()}`);
   return fail;
 }
 
 async function main() {
+  const control = parseControlArg(process.argv.slice(2)); // 不明な列なら、何もせずに終了
   cfg = await loadLocalConfig({ requireAnon: true });
   secrets = [cfg.serviceKey, cfg.anonKey, SEED_PASSWORD];
   admin = cfg.makeClient(cfg.serviceKey);
 
   await loadSeed();
+
+  // 陽性対照：列の確認だけを、書き換えた期待値の写しで走らせる（読み取りのみ）
+  if (control) {
+    const mode = `positive control (expected list copy: dropped ${control.table}.${control.column}, ` +
+      `added ${control.table}.${CONTROL_FAKE_COLUMN})`;
+    console.log(mode);
+    await runColumnChecks({ expected: buildControlExpected(control), control });
+    process.exitCode = report({ file: CONTROL_REPORT_FILE, mode }) > 0 ? 1 : 0;
+    return;
+  }
+
   baseline = await takeSnapshot();
   const initial = baseline;
 
@@ -545,6 +756,7 @@ async function main() {
     await runTenant(t, await signIn(t.email));
   }
   await runAdmin();
+  await runColumnChecks({ expected: EXPECTED_READABLE_COLUMNS, control: null });
   await runRpcList();
   await runCleanupCheck(initial);
 

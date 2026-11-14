@@ -116,6 +116,41 @@ export async function loadLocalConfig({ requireAnon = false } = {}) {
   return { url: url.origin, serviceKey, anonKey, makeClient, fetch: localOnlyFetch };
 }
 
+// Postgres へ直接つなぐための設定（列の権限の確認用）。読むのは DB_URL だけ。
+// ホストは 127.0.0.1 だけを通す（localhost も不可）。クエリ文字列（?host= など）があれば止める。
+// 接続文字列ではなく、分解した値を返す（PGHOST などの環境変数で接続先が変わらないように）
+export function loadLocalDbConfig() {
+  if (!existsSync(ENV_FILE)) {
+    fail(".env.seed.local not found. Run: pnpm supabase status -o env > .env.seed.local");
+  }
+  const env = parseEnvFile(ENV_FILE);
+  if (!env.DB_URL) fail("DB_URL is missing in .env.seed.local");
+
+  let url;
+  try {
+    url = new URL(env.DB_URL);
+  } catch {
+    return fail("DB_URL is not a valid URL");
+  }
+  if (url.protocol !== "postgresql:" && url.protocol !== "postgres:") {
+    fail("DB_URL must be a postgresql:// URL");
+  }
+  if (url.hostname !== "127.0.0.1") {
+    fail(`refusing to connect to database host: ${url.hostname} (only 127.0.0.1 is allowed)`);
+  }
+  if (url.search || url.hash) fail("DB_URL must not have query parameters");
+  const database = decodeURIComponent(url.pathname.replace(/^\//, ""));
+  if (!url.username || !database) fail("DB_URL must include a user and a database");
+
+  return {
+    host: "127.0.0.1",
+    port: url.port ? Number(url.port) : 5432,
+    user: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    database,
+  };
+}
+
 export async function createLocalAdminClient() {
   const { makeClient, serviceKey } = await loadLocalConfig();
   return makeClient(serviceKey);

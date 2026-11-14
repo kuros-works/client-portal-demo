@@ -53,6 +53,26 @@ node scripts/local-seed/verify-rls.mjs
 - 結果は `scripts/local-seed/reports/verify-rls-latest.md` に保存される（git 無視。キー・パスワード・トークンは書かない）。
 - 終了コードは、FAIL があれば 1。
 
+### 列の読み取り（SELECT）の確認
+
+期待値は `verify-rls.mjs` の先頭の `EXPECTED_READABLE_COLUMNS`（ロールごと・テーブルごとに読めてよい列）。列が多くても少なくても FAIL。
+
+1. 権限：`.env.seed.local` の `DB_URL` で Postgres に直接つなぎ、`information_schema.columns` の全列に `has_column_privilege`（anon・authenticated、SELECT）を当てる。表全体の権限も数える。public のテーブル・ビューが期待値の 4 つ以外にあっても FAIL。
+   - 接続先のホストは `127.0.0.1` だけ（`localhost` も不可）。クエリ文字列つきの URL も止める（`guard.mjs` の `loadLocalDbConfig()`）。
+   - 接続後は `default_transaction_read_only = on` にして、SELECT だけを送る。
+2. 実際の読み取り：client-a・client-b・admin でログインし、各テーブルを `select *` して、返ってきた列名を比べる。読めてよい列があるテーブルで 1 行も返らなければ FAIL（確認できていないため）。anon は既存の「エラーか 0 件」の確認で見る。
+
+### 陽性対照（列の確認が FAIL を出せるかの確認）
+
+```bash
+node scripts/local-seed/verify-rls.mjs --positive-control                  # 既定：projects.stripe_session_id
+node scripts/local-seed/verify-rls.mjs --positive-control=profiles.email   # 対象の列を指定
+```
+
+- 期待値の写しから指定の列を抜き、存在しない列 `__control_missing__` を足して、列の確認だけを走らせる。本物の期待値は変えない。
+- 対象のテーブルでは「抜いた列が extra、足した列が missing として検出された」ときだけ PASS。検出できなければ FAIL（終了コード 1）。ほかのテーブルは通常どおりの判定。
+- 結果は `reports/verify-rls-control.md` に保存する（`verify-rls-latest.md` は上書きしない）。
+
 ### テストでデータが変わってしまったとき
 
 書き込みの検証が破れてデータが変わった場合は、seed.mjs で作り直せる。
