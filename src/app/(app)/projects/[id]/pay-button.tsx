@@ -37,6 +37,11 @@ export function PayButton({
           We couldn&apos;t find this project.
         </p>
       )}
+      {state.status === "not_owner" && (
+        <p className="text-sm text-destructive">
+          Payment is made by your company&apos;s owner.
+        </p>
+      )}
       {state.status === "unavailable" && (
         <p className="text-sm text-destructive">
           This project can&apos;t be paid for right now. Please reload the page.

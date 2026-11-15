@@ -29,18 +29,19 @@ async function ProjectDetail({
 }) {
   // 毎回リクエスト時に描画する。プリレンダー中に Date.now を読む処理が走らないよう、最初に止める
   await connection();
-  const { userId, role } = await requireUser();
+  const { role, organizationId, orgRole } = await requireUser();
   if (role === "admin") {
     redirect("/admin");
   }
 
-  // UUID でない値を DB に渡すとエラーになるので、先に 404 にする
+  // UUID でない値を DB に渡すとエラーになるので、先に 404 にする。
+  // どの会社にも入っていない人も 404
   const { id } = await params;
-  if (!UUID_PATTERN.test(id)) {
+  if (!UUID_PATTERN.test(id) || !organizationId) {
     notFound();
   }
 
-  // RLS でも絞られるが、コードでも自分の案件だけに絞る
+  // RLS でも絞られるが、コードでも自分の会社の案件だけに絞る
   const supabase = await createClient();
   const { data: project, error } = await supabase
     .from("projects")
@@ -48,7 +49,7 @@ async function ProjectDetail({
       "id, name, status, amount, payment_status, project_files(id, file_name, size, uploaded_at)",
     )
     .eq("id", id)
-    .eq("client_id", userId)
+    .eq("organization_id", organizationId)
     .order("uploaded_at", {
       referencedTable: "project_files",
       ascending: false,
@@ -116,8 +117,14 @@ async function ProjectDetail({
               paymentStatus={project.payment_status}
             />
           </div>
-          {payable && (
+          {/* 支払いはオーナーだけ（サーバー側の Checkout でも確かめる） */}
+          {payable && orgRole === "owner" && (
             <PayButton projectId={project.id} amount={project.amount} />
+          )}
+          {payable && orgRole !== "owner" && (
+            <p className="text-sm text-muted-foreground">
+              Payment is made by your company&apos;s owner.
+            </p>
           )}
         </section>
       )}

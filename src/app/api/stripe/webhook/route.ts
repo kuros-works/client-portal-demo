@@ -53,7 +53,7 @@ async function handleCheckoutCompleted(event: Stripe.Event) {
   } else {
     const { data: project, error: projectError } = await supabase
       .from("projects")
-      .select("id, name, client_id, amount, payment_status, stripe_session_id")
+      .select("id, name, organization_id, amount, payment_status, stripe_session_id")
       .eq("id", projectId)
       .maybeSingle();
 
@@ -107,7 +107,7 @@ async function handleCheckoutCompleted(event: Stripe.Event) {
         const paidProject = {
           name: project.name,
           amount: session.amount_total,
-          clientId: project.client_id,
+          organizationId: project.organization_id,
         };
         after(async () => {
           try {
@@ -120,16 +120,29 @@ async function handleCheckoutCompleted(event: Stripe.Event) {
               return;
             }
 
-            const { data: client } = await supabase
-              .from("profiles")
-              .select("email")
-              .eq("id", paidProject.clientId)
-              .maybeSingle();
+            // 会社名とオーナーのメール。読めなくてもメールは送る（その行を省く）
+            const [{ data: organization }, { data: owner }] = await Promise.all([
+              supabase
+                .from("organizations")
+                .select("name")
+                .eq("id", paidProject.organizationId)
+                .maybeSingle(),
+              supabase
+                .from("organization_members")
+                .select("profiles(email)")
+                .eq("organization_id", paidProject.organizationId)
+                .eq("role", "owner")
+                .maybeSingle(),
+            ]);
+            const ownerProfile = Array.isArray(owner?.profiles)
+              ? owner.profiles[0]
+              : owner?.profiles;
 
             await sendPaymentReceivedEmail({
               projectName: paidProject.name,
               amountCents: paidProject.amount ?? 0,
-              clientEmail: client?.email ?? null,
+              organizationName: organization?.name ?? null,
+              ownerEmail: ownerProfile?.email ?? null,
               projectUrl: `${siteUrl}/admin`,
             });
           } catch (err) {

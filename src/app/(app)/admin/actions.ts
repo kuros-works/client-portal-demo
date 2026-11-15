@@ -16,32 +16,147 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type InviteState = {
-  status: "idle" | "invited" | "invalid" | "exists" | "error";
+  status: "idle" | "invited" | "invalid" | "exists" | "not_found" | "error";
 };
 
-export async function inviteClient(
+type AdminClient = Awaited<ReturnType<typeof requireAdminClient>>;
+
+function readEmail(formData: FormData) {
+  const email = String(formData.get("email") ?? "")
+    .trim()
+    .toLowerCase();
+  return email && email.includes("@") ? email : null;
+}
+
+// ユーザーを作る。成功したらユーザー ID、失敗したら招待の結果を返す
+async function createInvitedUser(
+  supabase: AdminClient,
+  email: string,
+): Promise<{ userId: string } | InviteState> {
+  const { data, error } = await supabase.auth.admin.createUser({
+    email,
+    email_confirm: true,
+  });
+
+  if (error || !data.user) {
+    // メールアドレスや鍵は出さず、エラーコードだけ残す
+    console.error("createUser failed:", error?.code ?? error?.status);
+    return { status: error?.code === "email_exists" ? "exists" : "error" };
+  }
+  return { userId: data.user.id };
+}
+
+// 途中で失敗したときの後始末。会社に入っていないユーザーを残さない
+async function rollbackInvite(
+  supabase: AdminClient,
+  userId: string,
+  organizationId?: string,
+) {
+  if (organizationId) {
+    const { error } = await supabase
+      .from("organizations")
+      .delete()
+      .eq("id", organizationId);
+    if (error) console.error("rollback organization failed:", error.code);
+  }
+  // profiles と organization_members も連動して消える
+  const { error } = await supabase.auth.admin.deleteUser(userId);
+  if (error) console.error("rollback user failed:", error.code ?? error.status);
+}
+
+// 新しい会社を作り、その会社のオーナーとして招待する
+export async function inviteOwner(
   _prevState: InviteState,
   formData: FormData,
 ): Promise<InviteState> {
   await requireAdmin();
 
-  const email = String(formData.get("email") ?? "")
-    .trim()
-    .toLowerCase();
-  if (!email || !email.includes("@")) {
+  const email = readEmail(formData);
+  const organizationName = String(formData.get("organization_name") ?? "").trim();
+  if (!email || !organizationName) {
+    return { status: "invalid" };
+  }
+
+  // 会社・メンバーの書き込みは service_role だけ（authenticated は select のみ）
+  const supabase = await requireAdminClient();
+  const created = await createInvitedUser(supabase, email);
+  if (!("userId" in created)) {
+    return created;
+  }
+
+  const { data: organization, error: orgError } = await supabase
+    .from("organizations")
+    .insert({ name: organizationName })
+    .select("id")
+    .single();
+  if (orgError || !organization) {
+    console.error("create organization failed:", orgError?.code);
+    await rollbackInvite(supabase, created.userId);
+    return { status: "error" };
+  }
+
+  const { error: memberError } = await supabase
+    .from("organization_members")
+    .insert({
+      organization_id: organization.id,
+      user_id: created.userId,
+      role: "owner",
+    });
+  if (memberError) {
+    console.error("add owner failed:", memberError.code);
+    await rollbackInvite(supabase, created.userId, organization.id);
+    return { status: "error" };
+  }
+
+  revalidatePath("/admin");
+  return { status: "invited" };
+}
+
+// 既存の会社に、スタッフとして招待する
+export async function inviteStaff(
+  _prevState: InviteState,
+  formData: FormData,
+): Promise<InviteState> {
+  await requireAdmin();
+
+  const email = readEmail(formData);
+  const organizationId = String(formData.get("organization_id") ?? "");
+  if (!email || !UUID_PATTERN.test(organizationId)) {
     return { status: "invalid" };
   }
 
   const supabase = await requireAdminClient();
-  const { error } = await supabase.auth.admin.createUser({
-    email,
-    email_confirm: true,
-  });
 
-  if (error) {
-    // メールアドレスや鍵は出さず、エラーコードだけ残す
-    console.error("createUser failed:", error.code ?? error.status);
-    return { status: error.code === "email_exists" ? "exists" : "error" };
+  // 先に会社があるか確かめる（ないならユーザーを作らない）
+  const { data: organization, error: orgError } = await supabase
+    .from("organizations")
+    .select("id")
+    .eq("id", organizationId)
+    .maybeSingle();
+  if (orgError) {
+    console.error("load organization failed:", orgError.code);
+    return { status: "error" };
+  }
+  if (!organization) {
+    return { status: "not_found" };
+  }
+
+  const created = await createInvitedUser(supabase, email);
+  if (!("userId" in created)) {
+    return created;
+  }
+
+  const { error: memberError } = await supabase
+    .from("organization_members")
+    .insert({
+      organization_id: organization.id,
+      user_id: created.userId,
+      role: "staff",
+    });
+  if (memberError) {
+    console.error("add staff failed:", memberError.code);
+    await rollbackInvite(supabase, created.userId);
+    return { status: "error" };
   }
 
   revalidatePath("/admin");
@@ -49,7 +164,7 @@ export async function inviteClient(
 }
 
 export type ProjectFormState = {
-  status: "idle" | "created" | "invalid" | "error";
+  status: "idle" | "created" | "invalid" | "no_owner" | "error";
 };
 
 export async function createProject(
@@ -59,10 +174,10 @@ export async function createProject(
   await requireAdmin();
 
   const name = String(formData.get("name") ?? "").trim();
-  const clientId = String(formData.get("client_id") ?? "");
+  const organizationId = String(formData.get("organization_id") ?? "");
   const status = String(formData.get("status") ?? "");
 
-  if (!name || !UUID_PATTERN.test(clientId)) {
+  if (!name || !UUID_PATTERN.test(organizationId)) {
     return { status: "invalid" };
   }
   // 空なら status を送らず、列の初期値に任せる
@@ -71,13 +186,37 @@ export async function createProject(
   }
 
   const supabase = await createClient();
-  const { error } = await supabase
-    .from("projects")
-    .insert(
-      status
-        ? { name, client_id: clientId, status }
-        : { name, client_id: clientId },
-    );
+
+  // client_id は 0006 で消すまで、その会社のオーナーを入れておく
+  const { data: owner, error: ownerError } = await supabase
+    .from("organization_members")
+    .select("user_id")
+    .eq("organization_id", organizationId)
+    .eq("role", "owner")
+    .maybeSingle();
+
+  if (ownerError) {
+    console.error("load organization owner failed:", ownerError.code);
+    return { status: "error" };
+  }
+  if (!owner) {
+    return { status: "no_owner" };
+  }
+
+  const row: {
+    name: string;
+    organization_id: string;
+    client_id: string;
+    status?: string;
+  } = {
+    name,
+    organization_id: organizationId,
+    client_id: owner.user_id,
+  };
+  if (status) {
+    row.status = status;
+  }
+  const { error } = await supabase.from("projects").insert(row);
 
   if (error) {
     console.error("create project failed:", error.code);
@@ -132,7 +271,7 @@ export async function updateProjectStatus(
     return { status: "not_updated" };
   }
 
-  // お客様へのメール。失敗しても更新の結果は変えない（sendEmail は例外を投げない）
+  // お客様の会社のメンバー全員へのメール。失敗しても更新の結果は変えない（sendEmail は例外を投げない）
   if (before && before.status !== status) {
     // 管理者の確認は after() の外で済ませ、after() の中ではそのクライアントを使う
     const adminClient = await requireAdminClient();
@@ -142,24 +281,51 @@ export async function updateProjectStatus(
         const siteUrl = getSiteUrl();
         const { data: project } = await adminClient
           .from("projects")
-          .select("name, profiles(email)")
+          .select("name, organization_id")
           .eq("id", projectId)
           .maybeSingle();
-        const profile = Array.isArray(project?.profiles)
-          ? project.profiles[0]
-          : project?.profiles;
 
-        if (!project || !profile?.email) {
-          console.error("status email skipped: client email not found");
+        if (!project) {
+          console.error("status email skipped: project not found");
           return;
         }
 
-        await sendStatusChangedEmail({
-          to: profile.email,
-          projectName: project.name,
-          status,
-          projectUrl: `${siteUrl}/projects/${projectId}`,
-        });
+        const { data: members, error: membersError } = await adminClient
+          .from("organization_members")
+          .select("profiles(email)")
+          .eq("organization_id", project.organization_id);
+        if (membersError) {
+          console.error("status email skipped: load members failed:", membersError.code);
+          return;
+        }
+
+        // 多対一の結合結果。型の上では配列にもなりうるので、どちらでもメールを取り出す
+        const recipients = [
+          ...new Set(
+            (members ?? [])
+              .map((m) => {
+                const profile = Array.isArray(m.profiles)
+                  ? m.profiles[0]
+                  : m.profiles;
+                return profile?.email;
+              })
+              .filter((email): email is string => Boolean(email)),
+          ),
+        ];
+        if (recipients.length === 0) {
+          console.error("status email skipped: no member emails found");
+          return;
+        }
+
+        // 1 人ずつ送る（宛先どうしにメールアドレスを見せない）
+        for (const to of recipients) {
+          await sendStatusChangedEmail({
+            to,
+            projectName: project.name,
+            status,
+            projectUrl: `${siteUrl}/projects/${projectId}`,
+          });
+        }
       } catch (err) {
         console.error(
           "status email failed:",

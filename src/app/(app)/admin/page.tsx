@@ -14,13 +14,13 @@ import { cn } from "@/lib/utils";
 import { AmountForm } from "./amount-form";
 import { FileDeleteForm } from "./file-delete-form";
 import { FileUploadForm } from "./file-upload-form";
-import { InviteForm } from "./invite-form";
+import { OwnerInviteForm, StaffInviteForm } from "./invite-form";
 import { ProjectForm } from "./project-form";
 import { StatusForm } from "./status-form";
 
-// 多対一の結合結果。型の上では配列にもなりうるので、どちらでもメールを取り出す
-function clientEmail(profiles: { email: string } | { email: string }[] | null) {
-  return (Array.isArray(profiles) ? profiles[0]?.email : profiles?.email) ?? "—";
+// 多対一の結合結果。型の上では配列にもなりうるので、どちらでも 1 件目を取り出す
+function one<T>(value: T | T[] | null | undefined): T | undefined {
+  return (Array.isArray(value) ? value[0] : value) ?? undefined;
 }
 
 async function AdminContent() {
@@ -30,16 +30,15 @@ async function AdminContent() {
   await requireAdmin();
 
   const supabase = await createClient();
-  const [clientsResult, projectsResult] = await Promise.all([
+  const [organizationsResult, projectsResult] = await Promise.all([
     supabase
-      .from("profiles")
-      .select("id, email")
-      .eq("role", "client")
-      .order("email"),
+      .from("organizations")
+      .select("id, name, organization_members(role, profiles(email))")
+      .order("name"),
     supabase
       .from("projects")
       .select(
-        "id, name, status, amount, payment_status, created_at, profiles(email), project_files(id, file_name, size, uploaded_at)",
+        "id, name, status, amount, payment_status, created_at, organizations(name), project_files(id, file_name, size, uploaded_at)",
       )
       .order("created_at", { ascending: false })
       .order("uploaded_at", {
@@ -48,14 +47,26 @@ async function AdminContent() {
       }),
   ]);
 
-  if (clientsResult.error) {
-    console.error("load clients failed:", clientsResult.error.code);
+  if (organizationsResult.error) {
+    console.error("load organizations failed:", organizationsResult.error.code);
   }
   if (projectsResult.error) {
     console.error("load projects failed:", projectsResult.error.code);
   }
 
-  const clients = clientsResult.data ?? [];
+  const organizations = (organizationsResult.data ?? []).map((organization) => {
+    const owner = organization.organization_members.find(
+      (member) => member.role === "owner",
+    );
+    const ownerEmail = one(owner?.profiles)?.email;
+    return {
+      id: organization.id,
+      name: organization.name,
+      label: ownerEmail
+        ? `${organization.name} (${ownerEmail})`
+        : `${organization.name} (no owner)`,
+    };
+  });
   const projects = projectsResult.data ?? [];
 
   return (
@@ -70,11 +81,15 @@ async function AdminContent() {
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
         <section className="flex flex-col gap-4 rounded-lg border bg-card p-5">
           <h2 className="text-base font-medium">Create a project</h2>
-          <ProjectForm clients={clients} />
+          <ProjectForm organizations={organizations} />
         </section>
         <section className="flex flex-col gap-4 rounded-lg border bg-card p-5">
-          <h2 className="text-base font-medium">Invite a client</h2>
-          <InviteForm />
+          <h2 className="text-base font-medium">Invite a new company owner</h2>
+          <OwnerInviteForm />
+        </section>
+        <section className="flex flex-col gap-4 rounded-lg border bg-card p-5">
+          <h2 className="text-base font-medium">Invite staff to a company</h2>
+          <StaffInviteForm organizations={organizations} />
         </section>
       </div>
 
@@ -100,7 +115,7 @@ async function AdminContent() {
                 <div className="flex min-w-0 flex-col gap-1">
                   <p className="break-all font-medium">{project.name}</p>
                   <p className="break-all text-sm text-muted-foreground">
-                    {clientEmail(project.profiles)}
+                    {one(project.organizations)?.name ?? "—"}
                   </p>
                   <p className="text-sm text-muted-foreground">
                     Created: {dateFormatter.format(new Date(project.created_at))}
