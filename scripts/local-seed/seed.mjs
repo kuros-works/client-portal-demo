@@ -1,5 +1,5 @@
 // RLS 検証用のテストデータをローカル Supabase に作る（何度実行しても同じ結果）。
-// 消すのは @seed.test のユーザーと、その人たちの案件・ファイルだけ。
+// 消すのは @seed.test のユーザーと、その人たちの会社・案件・ファイルだけ。
 import { randomUUID } from "node:crypto";
 import { createLocalAdminClient } from "./guard.mjs";
 
@@ -9,23 +9,31 @@ const SEED_PASSWORD = "seed-local-only-pw"; // ローカル専用。本番には
 
 const USERS = [
   { key: "admin", email: `admin${DOMAIN}`, name: "Seed Admin", role: "admin" },
-  { key: "a", email: `client-a${DOMAIN}`, name: "Company A", role: "client" },
-  { key: "b", email: `client-b${DOMAIN}`, name: "Company B", role: "client" },
+  { key: "a", email: `client-a${DOMAIN}`, name: "Company A Owner", role: "client" },
+  { key: "aStaff", email: `client-a-staff${DOMAIN}`, name: "Company A Staff", role: "client" },
+  { key: "b", email: `client-b${DOMAIN}`, name: "Company B Owner", role: "client" },
+];
+
+// 会社とメンバー（最初の 1 人がオーナー）
+const ORGS = [
+  { key: "a", name: "Company A", members: [["a", "owner"], ["aStaff", "staff"]] },
+  { key: "b", name: "Company B", members: [["b", "owner"]] },
 ];
 
 // amount が null か paid → お客様にファイルが見える。unpaid で amount あり → 見えない
+// client_id は 0006 で消すまで、会社のオーナーを入れておく
 const PROJECTS = [
-  { owner: "a", name: "A-1", status: "in_progress", amount: null, paid: false,
+  { org: "a", name: "A-1", status: "in_progress", amount: null, paid: false,
     files: [["brief.txt", "A-1 brief (no invoice)"]] },
-  { owner: "a", name: "A-2", status: "in_review", amount: 50000, paid: false,
+  { org: "a", name: "A-2", status: "in_review", amount: 50000, paid: false,
     files: [["draft.txt", "A-2 draft (unpaid: hidden from client)"]] },
-  { owner: "a", name: "A-3", status: "delivered", amount: 30000, paid: true,
+  { org: "a", name: "A-3", status: "delivered", amount: 30000, paid: true,
     files: [["report.txt", "A-3 report (paid)"], ["納品物_最終版.txt", "A-3 final (paid, Japanese name)"]] },
-  { owner: "b", name: "B-1", status: "in_progress", amount: null, paid: false,
+  { org: "b", name: "B-1", status: "in_progress", amount: null, paid: false,
     files: [["brief.txt", "B-1 brief (no invoice)"]] },
-  { owner: "b", name: "B-2", status: "delivered", amount: 20000, paid: false,
+  { org: "b", name: "B-2", status: "delivered", amount: 20000, paid: false,
     files: [["draft.txt", "B-2 draft (unpaid: hidden from client)"]] },
-  { owner: "b", name: "B-3", status: "in_review", amount: 50, paid: true,
+  { org: "b", name: "B-3", status: "in_review", amount: 50, paid: true,
     files: [["notes.txt", "B-3 notes (paid, minimum amount)"]] },
 ];
 
@@ -44,11 +52,28 @@ async function listSeedUsers(admin) {
   }
 }
 
+// 後片付けは organization_id で行う：seed ユーザーが入っている会社 → その会社の案件・ファイル → 会社 → ユーザー
 async function cleanup(admin) {
   const users = await listSeedUsers(admin);
-  for (const user of users) {
+  const userIds = users.map((u) => u.id);
+  if (userIds.length === 0) return 0;
+
+  const { data: memberships, error: mErr } = await admin
+    .from("organization_members").select("organization_id").in("user_id", userIds);
+  must(mErr, "select organization_members");
+  const orgIds = [...new Set(memberships.map((m) => m.organization_id))];
+
+  if (orgIds.length > 0) {
+    // seed 以外の人が入っている会社は消さない（安全のため、ここで止める）
+    const { data: allMembers, error: amErr } = await admin
+      .from("organization_members").select("user_id").in("organization_id", orgIds);
+    must(amErr, "select members of seed organizations");
+    if (allMembers.some((m) => !userIds.includes(m.user_id))) {
+      throw new Error("a seed organization has a non-seed member; refusing to delete it");
+    }
+
     const { data: projects, error: pErr } = await admin
-      .from("projects").select("id").eq("client_id", user.id);
+      .from("projects").select("id").in("organization_id", orgIds);
     must(pErr, "select projects");
     const ids = projects.map((p) => p.id);
     if (ids.length > 0) {
@@ -62,6 +87,20 @@ async function cleanup(admin) {
       const { error } = await admin.from("projects").delete().in("id", ids);
       must(error, "delete projects");
     }
+
+    const { error } = await admin.from("organizations").delete().in("id", orgIds); // メンバーも連動して消える
+    must(error, "delete organizations");
+  }
+
+  // seed の会社の外に、seed ユーザーが client_id の案件が残っていれば止める（他人のデータは消さない）
+  const { count: leftover, error: lErr } = await admin
+    .from("projects").select("id", { count: "exact", head: true }).in("client_id", userIds);
+  must(lErr, "count leftover projects");
+  if (leftover > 0) {
+    throw new Error(`${leftover} project(s) outside seed organizations still reference seed users`);
+  }
+
+  for (const user of users) {
     const { error } = await admin.auth.admin.deleteUser(user.id); // profiles も連動して消える
     must(error, "deleteUser");
   }
@@ -93,6 +132,20 @@ async function main() {
     }
   }
 
+  // 会社とメンバー
+  const orgIds = {};
+  const ownerOf = {};
+  for (const o of ORGS) {
+    const { data, error } = await admin.from("organizations")
+      .insert({ name: o.name }).select("id").single();
+    must(error, `insert organization ${o.key}`);
+    orgIds[o.key] = data.id;
+    const { error: memErr } = await admin.from("organization_members").insert(
+      o.members.map(([userKey, role]) => ({ organization_id: data.id, user_id: userIds[userKey], role })));
+    must(memErr, `insert organization_members ${o.key}`);
+    ownerOf[o.key] = userIds[o.members.find(([, role]) => role === "owner")[0]];
+  }
+
   // 案件・ファイル（Storage → project_files の順）
   const projectIds = [];
   let storageUploaded = 0;
@@ -100,7 +153,8 @@ async function main() {
     const { data, error } = await admin.from("projects").insert({
       name: p.name,
       status: p.status,
-      client_id: userIds[p.owner],
+      organization_id: orgIds[p.org],
+      client_id: ownerOf[p.org],
       amount: p.amount,
       payment_status: p.paid ? "paid" : "unpaid",
       paid_at: p.paid ? new Date().toISOString() : null,
@@ -139,9 +193,18 @@ async function main() {
   const { count: files, error: e4 } = await admin
     .from("project_files").select("id", { count: "exact", head: true }).in("project_id", projectIds);
   must(e4, "count project_files");
+  const allOrgIds = Object.values(orgIds);
+  const { count: orgs, error: e5 } = await admin
+    .from("organizations").select("id", { count: "exact", head: true }).in("id", allOrgIds);
+  must(e5, "count organizations");
+  const { count: members, error: e6 } = await admin
+    .from("organization_members").select("user_id", { count: "exact", head: true })
+    .in("organization_id", allOrgIds);
+  must(e6, "count organization_members");
 
   console.log("created:");
   console.log(`  users:         ${profiles} (admin ${admins}, client ${profiles - admins})`);
+  console.log(`  organizations: ${orgs} (members ${members})`);
   console.log(`  projects:      ${projects}`);
   console.log(`  project_files: ${files}`);
   console.log(`  storage files: ${storageUploaded}`);

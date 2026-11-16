@@ -13,17 +13,24 @@ import { createClient } from "@/lib/supabase/server";
 async function ProjectList() {
   // 毎回リクエスト時に描画する。プリレンダー中に Date.now を読む処理が走らないよう、最初に止める
   await connection();
-  const { userId, role } = await requireUser();
+  const { role, organizationId } = await requireUser();
   if (role === "admin") {
     redirect("/admin");
   }
 
-  // RLS でも絞られるが、コードでも自分の案件だけに絞る
+  // どの会社にも入っていなければ、何も見せない
+  if (!organizationId) {
+    return (
+      <p className="text-sm text-muted-foreground">No projects yet.</p>
+    );
+  }
+
+  // RLS でも絞られるが、コードでも自分の会社の案件だけに絞る
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("projects")
     .select("id, name, status, created_at, amount, payment_status")
-    .eq("client_id", userId)
+    .eq("organization_id", organizationId)
     .order("created_at", { ascending: false });
 
   if (error) {

@@ -11,6 +11,10 @@
 
 - マジックリンクでログイン
 - 管理者（admin）とお客様（client）の役割分け
+- お客様は会社（organization）単位。会社での役割は `owner`（1社に1人・支払いができる）と `staff`（閲覧だけ）。1人が入れる会社は1社だけ
+  - 案件は会社のもの。同じ会社のメンバーは、その会社の案件・ファイルを見られる
+  - 支払い（Checkout）はオーナーだけ。スタッフには支払いボタンを出さず、サーバー側でも拒否する
+  - どの会社にも入っていないお客様は何も見えない（一覧は空、詳細は 404）
 - 案件の状態：`in_progress` / `in_review` / `delivered`
 - ファイル受け渡し（非公開 Storage・期限付きダウンロードリンク）
 - 管理画面
@@ -22,7 +26,7 @@
 
 Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分割払い・返金は扱わない
 
-- メール通知（Resend・英語・テキスト）は 2 つだけ：管理者がステータスを変えたらお客様へ、Stripe の支払い完了で管理者へ
+- メール通知（Resend・英語・テキスト）は 2 つだけ：管理者がステータスを変えたらその会社のメンバー全員へ（1人ずつ送る）、Stripe の支払い完了で管理者へ（本文に会社名とオーナーのメール）
   - 送信は `src/lib/email.ts`。`after()` の中で呼び、失敗しても本体（ステータス更新・Webhook）は失敗させない（例外を投げず、ログはエラー名だけ）
   - 環境変数：`RESEND_API_KEY`、`NOTIFY_FROM_EMAIL`、`ADMIN_NOTIFY_EMAIL`（管理者の通知先は固定）
   - ステータスが実際に変わったときだけ送る。支払いメールは、その Webhook で `paid` にできたときだけ送る
@@ -42,7 +46,7 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 
 ## テーブル設計
 
-定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正、0003 が案件ごとの請求の準備、0004 が権限の締め直し）。
+定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正、0003 が案件ごとの請求の準備、0004 が権限の締め直し、0005 が会社単位への切り替え）。
 
 - **profiles**：id、email、name、role、created_at
   - id は auth.users(id) への外部キー（削除時は連動して削除）
@@ -50,9 +54,15 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
   - role は `admin` / `client` のどちらか（初期値 `client`）
   - auth.users に行が増えると、トリガー（`on_auth_user_created`）が role = `client` で自動作成する
   - role は anon・authenticated からは変えられない（トリガー `profiles_prevent_role_change`。client 以外での作成も止める）。管理者への昇格は SQL Editor（postgres）で行う
-- **projects**：id、name、status、client_id、created_at、updated_at、amount、payment_status、paid_at、stripe_session_id
+- **organizations**：id、name、created_at（お客様の会社）
+- **organization_members**：organization_id、user_id、role、created_at
+  - 主キーは (organization_id, user_id)。organization_id は organizations(id)、user_id は profiles(id) への外部キー（どちらも `on delete cascade`）
+  - role は `owner` / `staff`。オーナーは1社に1人（部分ユニークインデックス `organization_members_one_owner_idx`）。user_id も一意（1人1社）
+  - 作成・変更・削除は service_role だけ（管理者の招待の Server Action が `requireAdmin()` の後に行う）
+- **projects**：id、name、status、organization_id、client_id、created_at、updated_at、amount、payment_status、paid_at、stripe_session_id
   - status は `in_progress` / `in_review` / `delivered`（初期値 `in_progress`）
-  - client_id は profiles(id) への外部キー・必須（`on delete restrict`：案件が残っている間はお客様のプロフィールを削除できない）
+  - organization_id は organizations(id) への外部キー・必須（`on delete restrict`：案件が残っている間は会社を削除できない）。案件の持ち主はこの列で判定する
+  - client_id は profiles(id) への外部キー・null 可（`on delete restrict`）。0006 で削除する予定で、それまでは案件の作成時にその会社のオーナーを入れる。コードや RLS の判定には使わない
   - updated_at は更新時にトリガーで自動更新する
   - amount は usd のセント単位で 50 以上。null は「請求なし」
   - payment_status は `unpaid` / `paid`（初期値 `unpaid`）。`paid` なら paid_at は必須（制約）
@@ -66,14 +76,14 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
   - RLS は有効・ポリシーなし。service_role だけが select / insert できる（anon・authenticated には何も与えない）
 - **Storage**：非公開バケット `project-files`（バケットの上限は 1 ファイル 10MB。アプリ側の上限は 4MB）
   - パスは `案件ID/<ファイルID>`（ファイルID は project_files.id と同じ）。元のファイル名は `file_name` 列に保存する
-- **RLS**：4 テーブルと storage.objects で有効。作成・変更・削除・招待は管理者のみ
-  - 各テーブルに「admin all」（管理者は全操作）と「client select own」（お客様は閲覧のみ）の 2 つを置く
-  - お客様が見られる範囲：profiles は自分の行、projects は `client_id` が自分の案件、project_files は自分の案件のファイル（その案件の amount が null または `paid` のときだけ）
-  - Storage は、パスの先頭フォルダが自分の案件ID のファイルだけ読める（0002 で `storage.objects.name` を明示する形に修正済み。0003 で project_files と同じ支払いの条件を追加）
-  - 管理者の判定は `is_admin()`（security definer・`profiles.role` を参照・実行できるのは authenticated のみ）
-  - 権限（0004 で「いったん revoke してから、アプリが使う分だけ grant」に整理）：authenticated は profiles が select だけ、projects が select と列ごとの insert / update（delete なし）、project_files が select / insert / delete。anon には何も与えない
-  - service_role は profiles・projects・project_files の select / insert / update / delete（表全体）。RLS を通らない
-  - projects の列ごとの権限（authenticated）：insert は name、status、client_id、amount / update は status、amount。payment_status・paid_at・stripe_session_id を書けるのは service_role（Webhook）だけ
+- **RLS**：6 テーブルと storage.objects で有効。作成・変更・削除・招待は管理者のみ
+  - 各テーブルに「admin all」（管理者は全操作）と、お客様の閲覧用のポリシー（「client select own」など）を置く
+  - お客様が見られる範囲：profiles は自分の行、organizations は自分の会社、organization_members は自分の会社のメンバーの行、projects は自分の会社の案件、project_files は自分の会社の案件のファイル（その案件の amount が null または `paid` のときだけ）。owner と staff で見られる範囲は同じ
+  - Storage は、パスの先頭フォルダが自分の会社の案件ID のファイルだけ読める（0002 で `storage.objects.name` を明示する形に修正済み。0003 で project_files と同じ支払いの条件を追加）
+  - 管理者の判定は `is_admin()`、会社の判定は `is_org_member(org)`・`is_org_owner(org)`（どれも security definer・`search_path = ''`・実行できるのは authenticated のみ）。organization_members のポリシーが自分自身を参照して無限ループにならないよう、判定は必ずこの関数を通す
+  - 権限（0004 で「いったん revoke してから、アプリが使う分だけ grant」に整理。0005 の新しい表も同じ）：authenticated は profiles・organizations・organization_members が select だけ、projects が select と列ごとの insert / update（delete なし）、project_files が select / insert / delete。anon には何も与えない
+  - service_role は profiles・projects・project_files・organizations・organization_members の select / insert / update / delete（表全体）。RLS を通らない
+  - projects の列ごとの権限（authenticated）：insert は name、status、organization_id、client_id、amount / update は status、amount。payment_status・paid_at・stripe_session_id を書けるのは service_role（Webhook）だけ
   - Supabase の初期設定（default privileges）で、新しいテーブルには anon・authenticated に TRUNCATE などが付く。テーブルを足すときは、0004 と同じく revoke してから必要な分だけ grant する
   - ダッシュボードの「新規テーブルに自動で RLS」が作る `rls_auto_enable()`（event trigger 用・security definer）は migrations に書き起こさない。0004 で PUBLIC・anon・authenticated の実行権限だけ外している
 
@@ -96,7 +106,8 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 - ログインは招待した人だけ（SQL ではなく、Supabase の設定と段階3のコードで対応）
   - Supabase の Auth 設定で新規登録（sign up）をオフにする
   - `signInWithOtp` は `shouldCreateUser: false` で呼ぶ
-  - お客様の招待はサーバー側で `service_role` を使って行う
+  - お客様の招待はサーバー側で `service_role` を使って行う。招待は2種類：「新しい会社を作ってオーナーとして招待（会社名を入力）」と「既存の会社にスタッフとして招待」。途中で失敗したら、作った会社とユーザーを消して戻す（会社に入っていないユーザーを残さない）
+- 案件の作成では、管理者はお客様ではなく会社を選ぶ。オーナーのいない会社には作らない
 - 最初の管理者は、Supabase の SQL Editor で手動で `profiles.role` を `admin` に変更する（本番なので実行前に確認を取る）
 - Stripe の Webhook では、案件を `stripe_session_id` ではなく Checkout Session の `metadata.project_id` で特定する
 - Webhook の受け口は `src/app/api/stripe/webhook/route.ts`（ログインなしで届くので、`src/proxy.ts` の matcher から除外している）
@@ -117,4 +128,7 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 
 - 段階0〜7 すべて完了
 - 英語化も完了：画面の文言・メタデータ（title / description）・README・開発者向けエラー文。メールテンプレートは元から英語
+- 会社単位（organizations / organization_members、owner / staff）への切り替え：0005 とアプリのコードはブランチ `feat/org-roles` で完了。本番の DB にはまだ当てていない。今の本番のコードは 0005 の後では案件を作れないので、本番には 0005 とこのコードを同時に出す
+  - 次は 0006（projects.client_id を消す）
+- RLS の検証は `scripts/local-seed/`（ローカルの Supabase だけ）。seed は A社（owner・staff）と B社（owner）。`verify-rls.mjs` は 273 checks
 - 開発モードで `Date.now()` の Blocking Route 警告が残っているが、`pnpm build` は成功する

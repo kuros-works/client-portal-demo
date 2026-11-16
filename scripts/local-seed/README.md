@@ -10,18 +10,20 @@ pnpm supabase status -o env > .env.seed.local   # git に入らない（.gitigno
 node scripts/local-seed/seed.mjs
 ```
 
-- 何度実行しても同じ結果になる。実行のたびに `@seed.test` のユーザーと、その案件・ファイルを消して作り直す。
+- 何度実行しても同じ結果になる。実行のたびに `@seed.test` のユーザーと、その人たちの会社・案件・ファイルを消して作り直す（後片付けは organization_id 経由）。
 - `.env.seed.local` にはキーが入る。画面に表示したり、コミットしたりしない。
 
 ## 作られるデータ
 
 - ユーザー（パスワードは全員同じローカル専用の値。`seed.mjs` の `SEED_PASSWORD`）
-  - `admin@seed.test`（管理者）
-  - `client-a@seed.test`（Company A）
-  - `client-b@seed.test`（Company B）
-- 案件 6 件・ファイル 7 件
+  - `admin@seed.test`（管理者・どの会社にも入らない）
+  - `client-a@seed.test`（Company A の owner）
+  - `client-a-staff@seed.test`（Company A の staff）
+  - `client-b@seed.test`（Company B の owner）
+- 会社 2 社（メンバー 3 行）・案件 6 件・ファイル 7 件
+- 案件は `organization_id` で会社に紐づける。`client_id` は 0006 で消すまで、その会社の owner を入れておく
 
-| 案件 | お客様 | status | amount | 支払い | ファイル（お客様から） |
+| 案件 | 会社 | status | amount | 支払い | ファイル（お客様から） |
 |---|---|---|---|---|---|
 | A-1 | A | in_progress | なし | - | 見える |
 | A-2 | A | in_review | 50000 | unpaid | 見えない |
@@ -47,7 +49,7 @@ node scripts/local-seed/seed.mjs
 node scripts/local-seed/verify-rls.mjs
 ```
 
-- anon・会社A・会社B・管理者の立場で、読み取り・書き込み・Storage・RPC を試し、表で PASS / FAIL を出す。
+- anon・A社 owner（client-a）・A社 staff（client-a-staff）・B社 owner（client-b）・管理者の立場で、読み取り・書き込み・Storage・RPC を試し、表で PASS / FAIL を出す。
 - 攻撃役は anon キー＋パスワードログインだけ。service_role は、準備・書き込み後の読み直し・このスクリプトが作った Storage の残骸の掃除にだけ使う。
 - FAIL が出ても、RLS や migrations は直さない。報告だけ。
 - 結果は `scripts/local-seed/reports/verify-rls-latest.md` に保存される（git 無視。キー・パスワード・トークンは書かない）。
@@ -57,7 +59,7 @@ node scripts/local-seed/verify-rls.mjs
 
 期待値は `verify-rls.mjs` の先頭の `EXPECTED_READABLE_COLUMNS`（ロールごと・テーブルごとに読めてよい列）。列が多くても少なくても FAIL。
 
-1. 権限：`.env.seed.local` の `DB_URL` で Postgres に直接つなぎ、`information_schema.columns` の全列に `has_column_privilege`（anon・authenticated、SELECT）を当てる。表全体の権限も数える。public のテーブル・ビューが期待値の 4 つ以外にあっても FAIL。
+1. 権限：`.env.seed.local` の `DB_URL` で Postgres に直接つなぎ、`information_schema.columns` の全列に `has_column_privilege`（anon・authenticated、SELECT）を当てる。表全体の権限も数える。public のテーブル・ビューが期待値の 6 つ以外にあっても FAIL。
    - 接続先のホストは `127.0.0.1` だけ（`localhost` も不可）。クエリ文字列つきの URL も止める（`guard.mjs` の `loadLocalDbConfig()`）。
    - 接続後は `default_transaction_read_only = on` にして、SELECT だけを送る。
 2. 実際の読み取り：client-a・client-b・admin でログインし、各テーブルを `select *` して、返ってきた列名を比べる。読めてよい列があるテーブルで 1 行も返らなければ FAIL（確認できていないため）。anon は既存の「エラーか 0 件」の確認で見る。

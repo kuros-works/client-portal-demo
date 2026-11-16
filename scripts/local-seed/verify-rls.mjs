@@ -1,4 +1,4 @@
-// RLS 検証：anon・会社A・会社B・管理者の立場で操作して、期待どおりか確認する。
+// RLS 検証：anon・A社オーナー・A社スタッフ・B社オーナー・管理者の立場で操作して、期待どおりか確認する。
 // 攻撃役は anon キー＋パスワードログインだけ。service_role は「準備」「読み直し」
 // 「このスクリプトが作った Storage の残骸の掃除」にだけ使う。
 // FAIL が出ても RLS や migrations は直さない（報告だけ）。
@@ -11,7 +11,7 @@ import { loadLocalConfig, loadLocalDbConfig } from "./guard.mjs";
 
 // ---------- 列の読み取り（SELECT）の期待値 ----------
 // ロールごと・テーブルごとに「読めてよい列」。これ以外の列が読める、または足りなければ FAIL。
-// authenticated は client-a・client-b・admin の共通（同じロールなので、列の権限も同じ）。
+// authenticated は client-a・client-a-staff・client-b・admin の共通（同じロールなので、列の権限も同じ）。
 // 行の範囲は RLS が決めるので、ここでは列だけを見る。
 const EXPECTED_READABLE_COLUMNS = deepFreeze({
   anon: {
@@ -19,15 +19,19 @@ const EXPECTED_READABLE_COLUMNS = deepFreeze({
     projects: [],
     project_files: [],
     stripe_events: [],
+    organizations: [],
+    organization_members: [],
   },
   authenticated: {
     profiles: ["id", "email", "name", "role", "created_at"],
     projects: [
       "id", "name", "status", "client_id", "created_at", "updated_at",
-      "amount", "payment_status", "paid_at", "stripe_session_id",
+      "amount", "payment_status", "paid_at", "stripe_session_id", "organization_id",
     ],
     project_files: ["id", "project_id", "file_name", "storage_path", "size", "uploaded_at"],
     stripe_events: [],
+    organizations: ["id", "name", "created_at"],
+    organization_members: ["organization_id", "user_id", "role", "created_at"],
   },
 });
 const PUBLIC_TABLES = Object.keys(EXPECTED_READABLE_COLUMNS.authenticated);
@@ -46,20 +50,32 @@ const SEED_PASSWORD = "seed-local-only-pw"; // seed.mjs と同じ値
 const REPORT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "reports");
 const REPORT_FILE = resolve(REPORT_DIR, "verify-rls-latest.md");
 const CONTROL_REPORT_FILE = resolve(REPORT_DIR, "verify-rls-control.md");
-// migrations（0001・0003・0004）にある public の関数
+// migrations（0001・0003・0004・0005）にある public の関数
 const KNOWN_RPC = [
   "is_admin", "handle_new_user", "set_updated_at",
   "prevent_paid_amount_change", "prevent_profile_role_change", "rls_auto_enable",
+  "is_org_member", "is_org_owner",
 ];
-const TRIGGER_RPC = KNOWN_RPC.filter((n) => n !== "is_admin");
+// authenticated が呼べてよい関数（RLS 用の判定）。それ以外はトリガー用で、誰も呼べない
+const AUTH_RPC = ["is_admin", "is_org_member", "is_org_owner"];
+const TRIGGER_RPC = KNOWN_RPC.filter((n) => !AUTH_RPC.includes(n));
+
+// ログインして試す立場（会社ごとの役割）
+const TENANTS = [
+  { key: "a", org: "a", orgRole: "owner", label: "client-a", email: `client-a@seed.test` },
+  { key: "aStaff", org: "a", orgRole: "staff", label: "client-a-staff", email: `client-a-staff@seed.test` },
+  { key: "b", org: "b", orgRole: "owner", label: "client-b", email: `client-b@seed.test` },
+];
 
 let cfg; // guard が返した設定
 let admin; // service_role クライアント（準備・読み直し・掃除だけ）
 let baseline; // 書き込みテスト前のスナップショット
 let secrets = [];
-const ids = {}; // { admin, a, b } のユーザー ID
+const ids = {}; // { admin, a, aStaff, b } のユーザー ID
+const orgIds = {}; // { a, b } の会社 ID
 let projects = [];
 let files = [];
+let members = []; // seed の会社の organization_members
 const results = [];
 const probePaths = new Set(); // このスクリプトが upload を試みたパス（掃除の対象はここだけ）
 const strayRemoved = [];
@@ -143,8 +159,12 @@ async function takeSnapshot() {
   must(pr.error, "snapshot profiles");
   const ev = await admin.from("stripe_events").select("*").order("event_id");
   must(ev.error, "snapshot stripe_events");
+  const o = await admin.from("organizations").select("*").order("id");
+  must(o.error, "snapshot organizations");
+  const m = await admin.from("organization_members").select("*").order("organization_id").order("user_id");
+  must(m.error, "snapshot organization_members");
   const objects = await listAllObjects();
-  return JSON.stringify({ p: p.data, f: f.data, pr: pr.data, ev: ev.data, objects });
+  return JSON.stringify({ p: p.data, f: f.data, pr: pr.data, ev: ev.data, o: o.data, m: m.data, objects });
 }
 
 // このスクリプトが upload を試みたパスのうち、実際に残っているものだけ消す
@@ -179,30 +199,55 @@ async function loadSeed() {
   must(list.error, "listUsers");
   const byEmail = (e) => list.data.users.find((u) => u.email === e)?.id;
   ids.admin = byEmail(`admin${DOMAIN}`);
-  ids.a = byEmail(`client-a${DOMAIN}`);
-  ids.b = byEmail(`client-b${DOMAIN}`);
-  if (!ids.admin || !ids.a || !ids.b) {
+  for (const t of TENANTS) ids[t.key] = byEmail(t.email);
+  if (!ids.admin || TENANTS.some((t) => !ids[t.key])) {
     throw new Error("seed users not found. Run: node scripts/local-seed/seed.mjs");
   }
-  const p = await admin.from("projects").select("*").in("client_id", [ids.a, ids.b]).order("name");
+
+  // 会社はメンバー（organization_members）から特定する
+  const m = await admin.from("organization_members").select("*")
+    .in("user_id", TENANTS.map((t) => ids[t.key]));
+  must(m.error, "load organization_members");
+  for (const t of TENANTS) {
+    const row = m.data.find((x) => x.user_id === ids[t.key]);
+    if (!row || row.role !== t.orgRole) {
+      throw new Error(`unexpected membership for ${t.label}. Run seed.mjs`);
+    }
+    if (orgIds[t.org] && orgIds[t.org] !== row.organization_id) {
+      throw new Error(`${t.label} is not in the same organization as its company. Run seed.mjs`);
+    }
+    orgIds[t.org] = row.organization_id;
+  }
+  if (orgIds.a === orgIds.b) throw new Error("company A and B share an organization. Run seed.mjs");
+
+  const allMembers = await admin.from("organization_members").select("*")
+    .in("organization_id", Object.values(orgIds));
+  must(allMembers.error, "load members of seed organizations");
+  members = allMembers.data;
+
+  const p = await admin.from("projects").select("*").in("organization_id", Object.values(orgIds)).order("name");
   must(p.error, "load projects");
   projects = p.data;
   const f = await admin.from("project_files").select("*").in("project_id", projects.map((x) => x.id));
   must(f.error, "load project_files");
   files = f.data;
-  if (projects.length !== 6 || files.length !== 7) {
-    throw new Error(`unexpected seed shape (projects ${projects.length}, files ${files.length}). Run seed.mjs`);
+  if (projects.length !== 6 || files.length !== 7 || members.length !== 3) {
+    throw new Error(`unexpected seed shape (projects ${projects.length}, files ${files.length}, ` +
+      `members ${members.length}). Run seed.mjs`);
   }
 }
 
-// 期待値は、DB の中身（amount と payment_status）から導く
-function tenantOf(key) {
-  const own = projects.filter((p) => p.client_id === ids[key]);
-  const other = projects.filter((p) => p.client_id !== ids[key]);
+// 期待値は、DB の中身（organization_id・amount・payment_status）から導く
+function tenantOf(t) {
+  const orgId = orgIds[t.org];
+  const otherOrgId = Object.values(orgIds).find((id) => id !== orgId);
+  const own = projects.filter((p) => p.organization_id === orgId);
+  const other = projects.filter((p) => p.organization_id !== orgId);
   const visible = (p) => p.amount === null || p.payment_status === "paid";
   const filesOf = (ps) => files.filter((f) => ps.some((p) => p.id === f.project_id));
   return {
-    key, label: `client-${key}`, email: `client-${key}${DOMAIN}`, own, other,
+    ...t, orgId, otherOrgId, own, other,
+    ownMembers: members.filter((x) => x.organization_id === orgId),
     ownVisibleFiles: filesOf(own.filter(visible)),
     ownHiddenFiles: filesOf(own.filter((p) => !visible(p))),
     otherFiles: filesOf(other),
@@ -234,7 +279,13 @@ async function runAnon() {
     record(role, `select * ${table} (rows and columns)`, "denied (error or 0 rows)", describe(r), isDenied(r));
   }
   await writeTest(role, "insert projects", () =>
-    anon.from("projects").insert({ name: "verify-probe", status: "in_progress", client_id: ids.a }).select());
+    anon.from("projects").insert({
+      name: "verify-probe", status: "in_progress", organization_id: orgIds.a, client_id: ids.a,
+    }).select());
+  await writeTest(role, "insert organizations", () =>
+    anon.from("organizations").insert({ name: "verify-probe" }).select());
+  await writeTest(role, "insert organization_members", () =>
+    anon.from("organization_members").insert({ organization_id: orgIds.a, user_id: ids.b, role: "staff" }).select());
   await writeTest(role, "update projects", () =>
     anon.from("projects").update({ status: "delivered" }).eq("id", some.id).select());
   await writeTest(role, "delete projects", () =>
@@ -268,6 +319,10 @@ async function runAnon() {
 
   const who = await attempt(() => anon.rpc("is_admin"));
   record(role, "rpc is_admin", "denied (error)", describe(who), !!who.error);
+  for (const fn of ["is_org_member", "is_org_owner"]) {
+    const r = await attempt(() => anon.rpc(fn, { org: orgIds.a }));
+    record(role, `rpc ${fn}(company A)`, "denied (error)", r.error ? describe(r) : `data=${r.data}`, !!r.error);
+  }
   for (const fn of TRIGGER_RPC) {
     await writeTest(role, `rpc ${fn}`, () => anon.rpc(fn), "denied (error), data unchanged");
   }
@@ -300,6 +355,26 @@ async function runTenant(t, c) {
 
   r = await attempt(() => c.from("stripe_events").select("*"));
   record(role, "select stripe_events", "denied (error or 0 rows)", describe(r), isDenied(r));
+
+  // 会社とメンバー：自分の会社の分だけ
+  r = await attempt(() => c.from("organizations").select("id"));
+  record(role, "select organizations", "1 row (own company)", describe(r),
+    !r.error && r.data.length === 1 && r.data[0].id === t.orgId);
+  r = await attempt(() => c.from("organization_members").select("organization_id,user_id,role"));
+  const memberKey = (x) => `${x.organization_id}/${x.user_id}/${x.role}`;
+  record(role, "select organization_members",
+    `${t.ownMembers.length} row(s): own company's members (${t.ownMembers.map((x) => x.role).sort().join(",")})`,
+    r.error ? describe(r) : `${r.data.length} row(s) (${r.data.map((x) => x.role).sort().join(",")})`,
+    !r.error && sameSet(r.data.map(memberKey), t.ownMembers.map(memberKey)));
+  r = await attempt(() => c.from("organizations").select("id").eq("id", t.otherOrgId));
+  record(role, "select other company's organization by id", "0 rows", describe(r), isDenied(r));
+  r = await attempt(() => c.from("organization_members").select("user_id").eq("organization_id", t.otherOrgId));
+  record(role, "select other company's members by organization_id", "0 rows", describe(r), isDenied(r));
+  r = await attempt(() => c.from("projects").select("id,organizations(id,name)").order("name"));
+  const embeddedOrgs = r.error ? [] : [...new Set(r.data.map((p) => p.organizations?.id).filter(Boolean))];
+  record(role, "select projects with embedded organizations", "own company only",
+    r.error ? describe(r) : `${embeddedOrgs.length} organization(s)`,
+    !r.error && sameSet(embeddedOrgs, [t.orgId]));
 
   // 件数だけ（count, head）：全体の 6 ではなく、自分の分だけになる
   r = await attempt(() => c.from("projects").select("*", { count: "exact", head: true }));
@@ -335,15 +410,22 @@ async function runTenant(t, c) {
   // --- 書き込み（すべて拒否。0 件で終わった場合も、読み直してデータが同じなら PASS）
   const other = t.other[0];
   const otherFile = t.otherFiles[0];
-  await writeTest(role, "insert project (client_id = self)", () =>
-    c.from("projects").insert({ name: "verify-probe-self", status: "in_progress", client_id: ids[t.key] }).select());
-  await writeTest(role, "insert project (client_id = other company)", () =>
-    c.from("projects").insert({ name: "verify-probe-other", status: "in_progress", client_id: other.client_id }).select());
+  await writeTest(role, "insert project (own company)", () =>
+    c.from("projects").insert({
+      name: "verify-probe-self", status: "in_progress", organization_id: t.orgId, client_id: ids[t.key],
+    }).select());
+  await writeTest(role, "insert project (other company)", () =>
+    c.from("projects").insert({
+      name: "verify-probe-other", status: "in_progress", organization_id: other.organization_id,
+      client_id: other.client_id,
+    }).select());
   await writeTest(role, "insert project with payment_status = paid", () =>
     c.from("projects").insert({
-      name: "verify-probe-paid", status: "in_progress", client_id: ids[t.key],
+      name: "verify-probe-paid", status: "in_progress", organization_id: t.orgId, client_id: ids[t.key],
       payment_status: "paid", paid_at: now,
     }).select());
+  await writeTest(role, "update own project (move to other company)", () =>
+    c.from("projects").update({ organization_id: t.otherOrgId }).eq("id", t.own[0].id).select());
   await writeTest(role, "update other company's project (status)", () =>
     c.from("projects").update({ status: "delivered" }).eq("id", other.id).select());
   await writeTest(role, "delete other company's project", () =>
@@ -382,6 +464,27 @@ async function runTenant(t, c) {
     c.from("project_files").delete().eq("id", otherFile.id).select());
   await writeTest(role, "insert stripe_events", () =>
     c.from("stripe_events").insert({ event_id: `verify-probe-${randomUUID()}`, event_type: "verify" }).select());
+
+  // 会社とメンバー：書き込みは全部できない（管理者が service_role で行う）
+  await writeTest(role, "insert organizations", () =>
+    c.from("organizations").insert({ name: "verify-probe" }).select());
+  await writeTest(role, "update own organization (name)", () =>
+    c.from("organizations").update({ name: "verify-probe" }).eq("id", t.orgId).select());
+  await writeTest(role, "delete own organization", () =>
+    c.from("organizations").delete().eq("id", t.orgId).select());
+  await writeTest(role, "delete other company's organization", () =>
+    c.from("organizations").delete().eq("id", t.otherOrgId).select());
+  await writeTest(role, "insert organization_members (join other company)", () =>
+    c.from("organization_members").insert({ organization_id: t.otherOrgId, user_id: ids[t.key], role: "owner" }).select());
+  await writeTest(role, "insert organization_members (add admin to own company)", () =>
+    c.from("organization_members").insert({ organization_id: t.orgId, user_id: ids.admin, role: "staff" }).select());
+  await writeTest(role, "update own membership role", () =>
+    c.from("organization_members").update({ role: t.orgRole === "owner" ? "staff" : "owner" })
+      .eq("organization_id", t.orgId).eq("user_id", ids[t.key]).select());
+  await writeTest(role, "delete own company's member rows", () =>
+    c.from("organization_members").delete().eq("organization_id", t.orgId).select());
+  await writeTest(role, "delete other company's member rows", () =>
+    c.from("organization_members").delete().eq("organization_id", t.otherOrgId).select());
 
   // --- Storage
   const visPaths = t.ownVisibleFiles.map((f) => f.storage_path);
@@ -442,6 +545,15 @@ async function runTenant(t, c) {
   const who = await attempt(() => c.rpc("is_admin"));
   record(role, "rpc is_admin", "false (no escalation)", who.error ? describe(who) : `data=${who.data}`,
     !who.error && who.data === false);
+  const rpcBool = async (fn, org, label, expected) => {
+    const x = await attempt(() => c.rpc(fn, { org }));
+    record(role, `rpc ${fn}(${label})`, String(expected), x.error ? describe(x) : `data=${x.data}`,
+      !x.error && x.data === expected);
+  };
+  await rpcBool("is_org_member", t.orgId, "own company", true);
+  await rpcBool("is_org_member", t.otherOrgId, "other company", false);
+  await rpcBool("is_org_owner", t.orgId, "own company", t.orgRole === "owner");
+  await rpcBool("is_org_owner", t.otherOrgId, "other company", false);
   for (const fn of TRIGGER_RPC) {
     await writeTest(role, `rpc ${fn}`, () => c.rpc(fn), "denied (error), data unchanged");
   }
@@ -456,7 +568,7 @@ async function runAdmin() {
     must(r.error, `count ${table}`);
     return r.count;
   };
-  for (const table of ["projects", "project_files", "profiles"]) {
+  for (const table of ["projects", "project_files", "profiles", "organizations", "organization_members"]) {
     const expected = await total(table);
     const r = await attempt(() => c.from(table).select("*", { count: "exact", head: true }));
     record(role, `count ${table}`, `${expected} (all rows)`, r.error ? describe(r) : `count=${r.count}`,
@@ -546,7 +658,7 @@ async function runColumnGrants(ctx) {
     return;
   }
 
-  // public にあるテーブル（とビュー）は、期待値にある 4 つだけのはず
+  // public にあるテーブル（とビュー）は、期待値にある 6 つだけのはず
   const tables = [...new Set(rows.map((r) => r.table_name))].sort();
   const unknown = tables.filter((t) => !PUBLIC_TABLES.includes(t));
   const absent = PUBLIC_TABLES.filter((t) => !tables.includes(t));
@@ -572,8 +684,7 @@ async function runColumnGrants(ctx) {
 // 2. 実際の読み取り：ログインして select * し、返ってきた列名を比べる
 async function runColumnReads(ctx) {
   const users = [
-    ["client-a", `client-a${DOMAIN}`],
-    ["client-b", `client-b${DOMAIN}`],
+    ...TENANTS.map((t) => [t.label, t.email]),
     ["admin", `admin${DOMAIN}`],
   ];
   for (const [role, email] of users) {
@@ -671,16 +782,17 @@ async function runRpcList() {
     ["anon", { apikey: cfg.anonKey }],
     ["client-a", { apikey: cfg.anonKey, Authorization: `Bearer ${token}` }],
   ];
+  const expectText = `only ${AUTH_RPC.join(", ")} visible`;
   for (const [role, headers] of viewers) {
     const seen = await fetchRpcNames(headers);
     if (seen.names === null) {
-      record(role, "visible RPC functions (OpenAPI)", "only is_admin visible",
+      record(role, "visible RPC functions (OpenAPI)", expectText,
         `skipped: OpenAPI not available to this role (HTTP ${seen.status})`, true,
         "could not list; the functions were still called by name above");
       continue;
     }
-    const extra = seen.names.filter((f) => f !== "is_admin");
-    record(role, "visible RPC functions (OpenAPI)", "only is_admin visible",
+    const extra = seen.names.filter((f) => !AUTH_RPC.includes(f));
+    record(role, "visible RPC functions (OpenAPI)", expectText,
       `visible: ${[...seen.names].sort().join(", ") || "(none)"}`, extra.length === 0,
       extra.length ? `visible but unexpected: ${extra.join(", ")}` : "");
   }
@@ -751,8 +863,8 @@ async function main() {
   const initial = baseline;
 
   await runAnon();
-  for (const key of ["a", "b"]) {
-    const t = tenantOf(key);
+  for (const tenant of TENANTS) {
+    const t = tenantOf(tenant);
     await runTenant(t, await signIn(t.email));
   }
   await runAdmin();

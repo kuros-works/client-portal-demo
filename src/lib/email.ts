@@ -70,7 +70,8 @@ export async function sendStatusChangedEmail(params: {
 export async function sendPaymentReceivedEmail(params: {
   projectName: string;
   amountCents: number;
-  clientEmail: string | null;
+  organizationName: string | null;
+  ownerEmail: string | null;
   projectUrl: string;
 }) {
   const to = process.env.ADMIN_NOTIFY_EMAIL;
@@ -87,7 +88,8 @@ export async function sendPaymentReceivedEmail(params: {
     subject: `Payment received: ${amount} for "${name}"`,
     text: [
       `A payment of ${amount} was received for the project "${name}".`,
-      params.clientEmail ? `Client: ${params.clientEmail}` : "",
+      params.organizationName ? `Company: ${oneLine(params.organizationName)}` : "",
+      params.ownerEmail ? `Owner: ${params.ownerEmail}` : "",
       "",
       `Open in the portal: ${params.projectUrl}`,
     ]

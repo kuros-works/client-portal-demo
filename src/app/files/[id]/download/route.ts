@@ -39,11 +39,11 @@ export async function GET(
     return notFound();
   }
 
-  // RLS により、管理者は全件、お客様は自分の案件のファイルだけが見える。
-  // ここではコードでも持ち主を確かめるので、案件の client_id も一緒に読む
+  // RLS により、管理者は全件、お客様は自分の会社の案件のファイルだけが見える。
+  // ここではコードでも持ち主を確かめるので、案件の organization_id も一緒に読む
   const { data: file, error } = await supabase
     .from("project_files")
-    .select("file_name, storage_path, projects(client_id)")
+    .select("file_name, storage_path, projects(organization_id)")
     .eq("id", id)
     .maybeSingle();
 
@@ -58,7 +58,7 @@ export async function GET(
     return notFound();
   }
 
-  // RLS とは別に、管理者か、案件の持ち主だけを通す。
+  // RLS とは別に、管理者か、案件の会社のメンバーだけを通す。
   // 役割は DB の profiles.role で確認し、読めなければ client として扱う
   const { data: profile, error: profileError } = await supabase
     .from("profiles")
@@ -70,10 +70,23 @@ export async function GET(
   }
 
   if (profile?.role !== "admin") {
+    // 自分の所属（1 人 1 社）。読めない・入っていなければ通さない
+    const { data: membership, error: membershipError } = await supabase
+      .from("organization_members")
+      .select("organization_id")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (membershipError) {
+      console.error("membership lookup failed:", membershipError.code);
+    }
+
     const project = Array.isArray(file.projects)
       ? file.projects[0]
       : file.projects;
-    if (project?.client_id !== userId) {
+    if (
+      !membership?.organization_id ||
+      project?.organization_id !== membership.organization_id
+    ) {
       return notFound();
     }
   }

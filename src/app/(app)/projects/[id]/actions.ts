@@ -14,14 +14,20 @@ const UUID_PATTERN =
 const CHECKOUT_EXPIRES_IN = 30 * 60;
 
 export type CheckoutFormState = {
-  status: "idle" | "invalid" | "not_found" | "unavailable" | "error";
+  status:
+    | "idle"
+    | "invalid"
+    | "not_found"
+    | "not_owner"
+    | "unavailable"
+    | "error";
 };
 
 export async function createCheckoutSession(
   _prevState: CheckoutFormState,
   formData: FormData,
 ): Promise<CheckoutFormState> {
-  const { userId, role } = await requireUser();
+  const { role, organizationId, orgRole } = await requireUser();
   if (role === "admin") {
     redirect("/admin");
   }
@@ -31,14 +37,22 @@ export async function createCheckoutSession(
   if (!UUID_PATTERN.test(projectId)) {
     return { status: "invalid" };
   }
+  // どの会社にも入っていない人は、見つからない扱い
+  if (!organizationId) {
+    return { status: "not_found" };
+  }
+  // 支払えるのは会社のオーナーだけ（画面でボタンを隠すだけでなく、ここで必ず止める）
+  if (orgRole !== "owner") {
+    return { status: "not_owner" };
+  }
 
-  // RLS でも絞られるが、コードでも自分の案件だけに絞る
+  // RLS でも絞られるが、コードでも自分の会社の案件だけに絞る
   const supabase = await createClient();
   const { data: project, error } = await supabase
     .from("projects")
     .select("id, name, amount, payment_status")
     .eq("id", projectId)
-    .eq("client_id", userId)
+    .eq("organization_id", organizationId)
     .maybeSingle();
 
   if (error) {
