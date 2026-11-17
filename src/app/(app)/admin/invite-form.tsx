@@ -21,9 +21,13 @@ export type OrganizationOption = {
 function InviteMessages({
   state,
   invalidText,
+  successText,
+  errorText,
 }: {
   state: InviteState;
   invalidText: string;
+  successText: string;
+  errorText: string;
 }) {
   return (
     <>
@@ -41,15 +45,10 @@ function InviteMessages({
         </p>
       )}
       {state.status === "error" && (
-        <p className="text-sm text-destructive">
-          We couldn&apos;t invite the client. Please try again later.
-        </p>
+        <p className="text-sm text-destructive">{errorText}</p>
       )}
       {state.status === "invited" && (
-        <p className="text-sm">
-          Client added. No email was sent. They can request a sign-in link
-          from the sign-in page.
-        </p>
+        <p className="text-sm">{successText}</p>
       )}
     </>
   );
@@ -92,6 +91,8 @@ export function OwnerInviteForm() {
       <InviteMessages
         state={state}
         invalidText="Please enter a company name and a valid email address."
+        successText="Company created and owner added. No email was sent. They can request a sign-in link from the sign-in page."
+        errorText="We couldn't create the company or add the owner. Please try again later."
       />
       <Button type="submit" disabled={pending} className="h-9 w-full font-medium">
         {pending ? "Inviting…" : "Create company and invite owner"}
@@ -155,6 +156,8 @@ export function StaffInviteForm({
       <InviteMessages
         state={state}
         invalidText="Please select a company and enter a valid email address."
+        successText="Staff member added. No email was sent. They can request a sign-in link from the sign-in page."
+        errorText="We couldn't add the staff member. Please try again later."
       />
       <Button type="submit" disabled={pending} className="h-9 w-full font-medium">
         {pending ? "Inviting…" : "Invite staff"}
