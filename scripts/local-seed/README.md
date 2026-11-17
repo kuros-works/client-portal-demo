@@ -21,7 +21,7 @@ node scripts/local-seed/seed.mjs
   - `client-a-staff@seed.test`（Company A の staff）
   - `client-b@seed.test`（Company B の owner）
 - 会社 2 社（メンバー 3 行）・案件 6 件・ファイル 7 件
-- 案件は `organization_id` で会社に紐づける。`client_id` は 0006 で消すまで、その会社の owner を入れておく
+- 案件は `organization_id` で会社に紐づける（`projects.client_id` は 0006 で削除済み）
 
 | 案件 | 会社 | status | amount | 支払い | ファイル（お客様から） |
 |---|---|---|---|---|---|

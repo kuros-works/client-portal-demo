@@ -21,7 +21,6 @@ const ORGS = [
 ];
 
 // amount が null か paid → お客様にファイルが見える。unpaid で amount あり → 見えない
-// client_id は 0006 で消すまで、会社のオーナーを入れておく
 const PROJECTS = [
   { org: "a", name: "A-1", status: "in_progress", amount: null, paid: false,
     files: [["brief.txt", "A-1 brief (no invoice)"]] },
@@ -90,14 +89,18 @@ async function cleanup(admin) {
 
     const { error } = await admin.from("organizations").delete().in("id", orgIds); // メンバーも連動して消える
     must(error, "delete organizations");
-  }
 
-  // seed の会社の外に、seed ユーザーが client_id の案件が残っていれば止める（他人のデータは消さない）
-  const { count: leftover, error: lErr } = await admin
-    .from("projects").select("id", { count: "exact", head: true }).in("client_id", userIds);
-  must(lErr, "count leftover projects");
-  if (leftover > 0) {
-    throw new Error(`${leftover} project(s) outside seed organizations still reference seed users`);
+    // seed の会社の案件と会社が、本当に消えたか確かめてからユーザーを消す
+    const { count: leftoverProjects, error: lpErr } = await admin
+      .from("projects").select("id", { count: "exact", head: true }).in("organization_id", orgIds);
+    must(lpErr, "count leftover projects");
+    const { count: leftoverOrgs, error: loErr } = await admin
+      .from("organizations").select("id", { count: "exact", head: true }).in("id", orgIds);
+    must(loErr, "count leftover organizations");
+    if (leftoverProjects > 0 || leftoverOrgs > 0) {
+      throw new Error(
+        `seed organizations were not fully removed (projects ${leftoverProjects}, organizations ${leftoverOrgs})`);
+    }
   }
 
   for (const user of users) {
@@ -134,7 +137,6 @@ async function main() {
 
   // 会社とメンバー
   const orgIds = {};
-  const ownerOf = {};
   for (const o of ORGS) {
     const { data, error } = await admin.from("organizations")
       .insert({ name: o.name }).select("id").single();
@@ -143,7 +145,6 @@ async function main() {
     const { error: memErr } = await admin.from("organization_members").insert(
       o.members.map(([userKey, role]) => ({ organization_id: data.id, user_id: userIds[userKey], role })));
     must(memErr, `insert organization_members ${o.key}`);
-    ownerOf[o.key] = userIds[o.members.find(([, role]) => role === "owner")[0]];
   }
 
   // 案件・ファイル（Storage → project_files の順）
@@ -154,7 +155,6 @@ async function main() {
       name: p.name,
       status: p.status,
       organization_id: orgIds[p.org],
-      client_id: ownerOf[p.org],
       amount: p.amount,
       payment_status: p.paid ? "paid" : "unpaid",
       paid_at: p.paid ? new Date().toISOString() : null,

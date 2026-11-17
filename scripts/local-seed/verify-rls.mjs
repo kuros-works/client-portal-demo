@@ -25,7 +25,7 @@ const EXPECTED_READABLE_COLUMNS = deepFreeze({
   authenticated: {
     profiles: ["id", "email", "name", "role", "created_at"],
     projects: [
-      "id", "name", "status", "client_id", "created_at", "updated_at",
+      "id", "name", "status", "created_at", "updated_at",
       "amount", "payment_status", "paid_at", "stripe_session_id", "organization_id",
     ],
     project_files: ["id", "project_id", "file_name", "storage_path", "size", "uploaded_at"],
@@ -35,6 +35,18 @@ const EXPECTED_READABLE_COLUMNS = deepFreeze({
   },
 });
 const PUBLIC_TABLES = Object.keys(EXPECTED_READABLE_COLUMNS.authenticated);
+
+// service_role の表の権限（0006 の後）。service_role は RLS を通らないので、これがそのまま「できること」になる
+// TRUNCATE・REFERENCES・TRIGGER・MAINTAIN はどの表にも無い。stripe_events は select と insert だけの台帳
+const TABLE_PRIVILEGES = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN"];
+const EXPECTED_SERVICE_ROLE_PRIVILEGES = deepFreeze({
+  profiles: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  projects: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  project_files: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  stripe_events: ["SELECT", "INSERT"],
+  organizations: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  organization_members: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+});
 // 陽性対照（--positive-control）で期待値に足す、存在しない列
 const CONTROL_FAKE_COLUMN = "__control_missing__";
 const DEFAULT_CONTROL_TARGET = "projects.stripe_session_id";
@@ -280,7 +292,7 @@ async function runAnon() {
   }
   await writeTest(role, "insert projects", () =>
     anon.from("projects").insert({
-      name: "verify-probe", status: "in_progress", organization_id: orgIds.a, client_id: ids.a,
+      name: "verify-probe", status: "in_progress", organization_id: orgIds.a,
     }).select());
   await writeTest(role, "insert organizations", () =>
     anon.from("organizations").insert({ name: "verify-probe" }).select());
@@ -412,16 +424,15 @@ async function runTenant(t, c) {
   const otherFile = t.otherFiles[0];
   await writeTest(role, "insert project (own company)", () =>
     c.from("projects").insert({
-      name: "verify-probe-self", status: "in_progress", organization_id: t.orgId, client_id: ids[t.key],
+      name: "verify-probe-self", status: "in_progress", organization_id: t.orgId,
     }).select());
   await writeTest(role, "insert project (other company)", () =>
     c.from("projects").insert({
       name: "verify-probe-other", status: "in_progress", organization_id: other.organization_id,
-      client_id: other.client_id,
     }).select());
   await writeTest(role, "insert project with payment_status = paid", () =>
     c.from("projects").insert({
-      name: "verify-probe-paid", status: "in_progress", organization_id: t.orgId, client_id: ids[t.key],
+      name: "verify-probe-paid", status: "in_progress", organization_id: t.orgId,
       payment_status: "paid", paid_at: now,
     }).select());
   await writeTest(role, "update own project (move to other company)", () =>
@@ -635,21 +646,28 @@ const GRANTS_SQL = `
   where c.table_schema = 'public'
   order by 1, 2, 3`;
 
-async function runColumnGrants(ctx) {
+// ローカルの Postgres に読み取り専用でつなぎ、SELECT を 1 つ流して行を返す
+async function queryLocalDb(sql, params = []) {
   const db = loadLocalDbConfig(); // 127.0.0.1 以外なら、ここで終了する
   secrets.push(db.password);
   const client = new pg.Client({ ...db, connectionTimeoutMillis: 5000, application_name: "verify-rls" });
-  let rows;
   try {
     await client.connect();
     await client.query("set default_transaction_read_only = on"); // 読むだけ
-    rows = (await client.query(GRANTS_SQL)).rows;
+    return (await client.query(sql, params)).rows;
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+async function runColumnGrants(ctx) {
+  let rows;
+  try {
+    rows = await queryLocalDb(GRANTS_SQL);
   } catch (e) {
     record("grants", "query column privileges (local Postgres)", "query succeeds",
       `error: ${String(e.message).slice(0, 70)}`, false);
     return;
-  } finally {
-    await client.end().catch(() => {});
   }
 
   if (rows.length === 0) {
@@ -722,6 +740,40 @@ async function runColumnReads(ctx) {
 async function runColumnChecks(ctx) {
   await runColumnGrants(ctx);
   await runColumnReads(ctx);
+}
+
+// 3. service_role の表の権限：has_table_privilege で 8 種類を当てる（MAINTAIN は information_schema に出ないため）
+//    余分（extra）＝外したはずの権限が残っている / 足りない（missing）＝アプリが使う権限が無い
+const SERVICE_ROLE_PRIVILEGES_SQL = `
+  select t.table_name,
+         p.privilege,
+         has_table_privilege('service_role', format('public.%I', t.table_name), p.privilege) as granted
+  from unnest($1::text[]) as t(table_name)
+  cross join unnest($2::text[]) as p(privilege)
+  order by 1, 2`;
+
+async function runServiceRolePrivileges() {
+  const tables = Object.keys(EXPECTED_SERVICE_ROLE_PRIVILEGES);
+  let rows;
+  try {
+    rows = await queryLocalDb(SERVICE_ROLE_PRIVILEGES_SQL, [tables, TABLE_PRIVILEGES]);
+  } catch (e) {
+    record("grants:service_role", "query table privileges (local Postgres)", "query succeeds",
+      `error: ${String(e.message).slice(0, 70)}`, false);
+    return;
+  }
+
+  for (const table of tables) {
+    const expected = EXPECTED_SERVICE_ROLE_PRIVILEGES[table];
+    const actual = rows.filter((r) => r.table_name === table && r.granted).map((r) => r.privilege);
+    const { extra, missing } = diffColumns(expected, actual);
+    const diffText = [
+      extra.length ? `extra (should be revoked): ${extra.join(", ")}` : "",
+      missing.length ? `missing (app needs it): ${missing.join(", ")}` : "",
+    ].filter(Boolean).join(" | ");
+    record("grants:service_role", `table privileges: ${table} (of ${TABLE_PRIVILEGES.length} checked)`,
+      listText(expected), diffText || `match (${actual.length} privileges)`, !diffText);
+  }
 }
 
 // --positive-control[=table.column]：期待値の写しから 1 列を抜き、存在しない列を 1 つ足して、
@@ -869,6 +921,7 @@ async function main() {
   }
   await runAdmin();
   await runColumnChecks({ expected: EXPECTED_READABLE_COLUMNS, control: null });
+  await runServiceRolePrivileges();
   await runRpcList();
   await runCleanupCheck(initial);
 
