@@ -2,6 +2,9 @@
 -- 0005_rollback：migration 0005（organizations）を元に戻す
 -- 0005 で変えたことを、逆の順番で戻す。0004 の後と同じ状態にする
 --
+-- ■ 0006 を当てた後は、このファイルは使えない（projects.client_id の列が無いため）。
+--   先に 0006_rollback.sql を流すこと
+--
 -- ■ 元に戻せないもの（実行すると消えて、戻ってこない）
 --   1. organizations と organization_members の中身は全部消える
 --      - 0005 の後に管理者が入力した会社名
