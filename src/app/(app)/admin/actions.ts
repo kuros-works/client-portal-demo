@@ -187,7 +187,7 @@ export async function createProject(
 
   const supabase = await createClient();
 
-  // client_id は 0006 で消すまで、その会社のオーナーを入れておく
+  // オーナーのいない会社には案件を作らない（支払える人がいないため）
   const { data: owner, error: ownerError } = await supabase
     .from("organization_members")
     .select("user_id")
@@ -206,12 +206,10 @@ export async function createProject(
   const row: {
     name: string;
     organization_id: string;
-    client_id: string;
     status?: string;
   } = {
     name,
     organization_id: organizationId,
-    client_id: owner.user_id,
   };
   if (status) {
     row.status = status;
