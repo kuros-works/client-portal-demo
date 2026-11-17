@@ -64,6 +64,18 @@ node scripts/local-seed/verify-rls.mjs
    - 接続後は `default_transaction_read_only = on` にして、SELECT だけを送る。
 2. 実際の読み取り：client-a・client-b・admin でログインし、各テーブルを `select *` して、返ってきた列名を比べる。読めてよい列があるテーブルで 1 行も返らなければ FAIL（確認できていないため）。anon は既存の「エラーか 0 件」の確認で見る。
 
+### service_role の表の権限の確認
+
+期待値は `verify-rls.mjs` の `EXPECTED_SERVICE_ROLE_PRIVILEGES`（0006 の後の形）。
+
+- 列の確認と同じく `DB_URL` で Postgres に読み取り専用でつなぎ、public の 6 つの表それぞれに `has_table_privilege('service_role', …)` で 8 種類（SELECT・INSERT・UPDATE・DELETE・TRUNCATE・REFERENCES・TRIGGER・MAINTAIN）を当てる。MAINTAIN は `information_schema` に出ないので、この関数で見る。
+- 期待値と完全に一致すれば PASS（5 つの表は SELECT・INSERT・UPDATE・DELETE、stripe_events は SELECT・INSERT だけ）。1 表で 1 件、合計 6 件。
+- FAIL のときの表示：
+  - `extra (should be revoked)`：外したはずの権限が残っている（0006 が当たっていない、新しい表で revoke を忘れた、など）
+  - `missing (app needs it)`：アプリが使う権限が無い（Server Action・Webhook が失敗する）
+- 新しい表を作ったら、期待値にその表を足す（足さないと、その表は見張られない）。
+- 0006_rollback.sql で 0006 の前に戻すと、6 件とも `extra` で FAIL になることを確かめてある。
+
 ### 陽性対照（列の確認が FAIL を出せるかの確認）
 
 ```bash

@@ -46,7 +46,7 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 
 ## テーブル設計
 
-定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正、0003 が案件ごとの請求の準備、0004 が権限の締め直し、0005 が会社単位への切り替え）。
+定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正、0003 が案件ごとの請求の準備、0004 が権限の締め直し、0005 が会社単位への切り替え、0006 が projects.client_id の削除と service_role の権限の締め直し）。本番に当てる前と後の確認・戻し方は `supabase/sql/`（`0005_verify.sql`・`0005_rollback.sql`・`0006_verify.sql`・`0006_rollback.sql`）。
 
 - **profiles**：id、email、name、role、created_at
   - id は auth.users(id) への外部キー（削除時は連動して削除）
@@ -59,10 +59,9 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
   - 主キーは (organization_id, user_id)。organization_id は organizations(id)、user_id は profiles(id) への外部キー（どちらも `on delete cascade`）
   - role は `owner` / `staff`。オーナーは1社に1人（部分ユニークインデックス `organization_members_one_owner_idx`）。user_id も一意（1人1社）
   - 作成・変更・削除は service_role だけ（管理者の招待の Server Action が `requireAdmin()` の後に行う）
-- **projects**：id、name、status、organization_id、client_id、created_at、updated_at、amount、payment_status、paid_at、stripe_session_id
+- **projects**：id、name、status、organization_id、created_at、updated_at、amount、payment_status、paid_at、stripe_session_id
   - status は `in_progress` / `in_review` / `delivered`（初期値 `in_progress`）
   - organization_id は organizations(id) への外部キー・必須（`on delete restrict`：案件が残っている間は会社を削除できない）。案件の持ち主はこの列で判定する
-  - client_id は profiles(id) への外部キー・null 可（`on delete restrict`）。0006 で削除する予定で、それまでは案件の作成時にその会社のオーナーを入れる。コードや RLS の判定には使わない
   - updated_at は更新時にトリガーで自動更新する
   - amount は usd のセント単位で 50 以上。null は「請求なし」
   - payment_status は `unpaid` / `paid`（初期値 `unpaid`）。`paid` なら paid_at は必須（制約）
@@ -73,7 +72,7 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
   - storage_path は一意。size は 0 以上
 - **stripe_events**：event_id（主キー）、event_type、session_id、amount_total、currency、payment_status、customer_email、received_at
   - Webhook の二重処理を防ぐため、受け取ったイベントを event_id で記録する
-  - RLS は有効・ポリシーなし。service_role だけが select / insert できる（anon・authenticated には何も与えない）
+  - RLS は有効・ポリシーなし。service_role は select / insert だけ（update・delete もできない、書き足すだけの台帳。0006 で外した）。anon・authenticated には何も与えない
 - **Storage**：非公開バケット `project-files`（バケットの上限は 1 ファイル 10MB。アプリ側の上限は 4MB）
   - パスは `案件ID/<ファイルID>`（ファイルID は project_files.id と同じ）。元のファイル名は `file_name` 列に保存する
 - **RLS**：6 テーブルと storage.objects で有効。作成・変更・削除・招待は管理者のみ
@@ -82,9 +81,10 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
   - Storage は、パスの先頭フォルダが自分の会社の案件ID のファイルだけ読める（0002 で `storage.objects.name` を明示する形に修正済み。0003 で project_files と同じ支払いの条件を追加）
   - 管理者の判定は `is_admin()`、会社の判定は `is_org_member(org)`・`is_org_owner(org)`（どれも security definer・`search_path = ''`・実行できるのは authenticated のみ）。organization_members のポリシーが自分自身を参照して無限ループにならないよう、判定は必ずこの関数を通す
   - 権限（0004 で「いったん revoke してから、アプリが使う分だけ grant」に整理。0005 の新しい表も同じ）：authenticated は profiles・organizations・organization_members が select だけ、projects が select と列ごとの insert / update（delete なし）、project_files が select / insert / delete。anon には何も与えない
-  - service_role は profiles・projects・project_files・organizations・organization_members の select / insert / update / delete（表全体）。RLS を通らない
-  - projects の列ごとの権限（authenticated）：insert は name、status、organization_id、client_id、amount / update は status、amount。payment_status・paid_at・stripe_session_id を書けるのは service_role（Webhook）だけ
-  - Supabase の初期設定（default privileges）で、新しいテーブルには anon・authenticated に TRUNCATE などが付く。テーブルを足すときは、0004 と同じく revoke してから必要な分だけ grant する
+  - service_role は profiles・projects・project_files・organizations・organization_members の select / insert / update / delete（表全体）、stripe_events は select / insert だけ。TRUNCATE・REFERENCES・TRIGGER・MAINTAIN はどの表にも無い（0006 で外した）。RLS を通らない
+  - projects の列ごとの権限（authenticated）：insert は name、status、organization_id、amount / update は status、amount。payment_status・paid_at・stripe_session_id を書けるのは service_role（Webhook）だけ
+  - Supabase の初期設定（default privileges）で、新しいテーブルには anon・authenticated・service_role の 3 つに全部の権限（arwdDxtm）が付く。テーブルを足すときは、0004・0006 と同じく revoke してから必要な分だけ grant する（「守るルール」参照）
+  - MAINTAIN は Postgres 17 からの権限で、`information_schema` には出ない。確かめるときは `has_table_privilege` か `pg_class.relacl` を見る
   - ダッシュボードの「新規テーブルに自動で RLS」が作る `rls_auto_enable()`（event trigger 用・security definer）は migrations に書き起こさない。0004 で PUBLIC・anon・authenticated の実行権限だけ外している
 
 ## 守るルール
@@ -99,6 +99,7 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 - 作業は1回に1つ。変更前に「何をどのファイルで変えるか」を短く説明してから行う
 - 本番の Supabase に影響する操作（SQL の実行・データ削除）は、実行前に必ず確認を取る
 - 新しいライブラリを足す前に、必要か確認を取る
+- 新しい表を作るときは、anon・authenticated に加えて service_role の TRUNCATE・REFERENCES・TRIGGER・MAINTAIN も revoke する。Supabase の初期設定で、新しい表ごとに全部付くため。verify-rls の `EXPECTED_SERVICE_ROLE_PRIVILEGES`（`scripts/local-seed/verify-rls.mjs`）にもその表を足す
 - コミットメッセージは英語の Conventional Commits 形式（例：`feat: add magic link login`）
 
 ## 決定事項
@@ -128,7 +129,10 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 
 - 段階0〜7 すべて完了
 - 英語化も完了：画面の文言・メタデータ（title / description）・README・開発者向けエラー文。メールテンプレートは元から英語
-- 会社単位（organizations / organization_members、owner / staff）への切り替え：0005 とアプリのコードはブランチ `feat/org-roles` で完了。本番の DB にはまだ当てていない。今の本番のコードは 0005 の後では案件を作れないので、本番には 0005 とこのコードを同時に出す
-  - 次は 0006（projects.client_id を消す）
-- RLS の検証は `scripts/local-seed/`（ローカルの Supabase だけ）。seed は A社（owner・staff）と B社（owner）。`verify-rls.mjs` は 273 checks
+- 会社単位（organizations / organization_members、owner / staff）への切り替え：0005 は 2026-11-16 に本番に適用済み・PR #9 マージ済み
+- projects.client_id の削除：
+  - PR #10（client_id を書かないコード）は 2026-11-18 にマージ・本番で確認済み
+  - 0006（client_id の削除・service_role の権限の締め直し）はローカルで確認済み（`0006_verify.sql` の PRE / POST・rollback → 再適用）。本番はこれから。当てる前と後に `supabase/sql/0006_verify.sql` を流す
+- 次は RAG（0007）
+- RLS の検証は `scripts/local-seed/`（ローカルの Supabase だけ）。seed は A社（owner・staff）と B社（owner）。`verify-rls.mjs` は 279 checks（うち列の確認 37・service_role の表の権限 6）。陽性対照（`--positive-control`）は 37 checks
 - 開発モードで `Date.now()` の Blocking Route 警告が残っているが、`pnpm build` は成功する
