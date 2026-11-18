@@ -26,10 +26,13 @@ function fail(kind: EmbeddingErrorKind): never {
   throw new EmbeddingError(kind);
 }
 
+type InputType = "document" | "query";
+
 // すべての文章を 1 回のリクエストでまとめて送る（無料枠は 3 回/分）。
 // 失敗したら EmbeddingError を投げる。429 は "rate_limited"、それ以外は "failed"。
-export async function embedDocuments(
+async function requestEmbeddings(
   texts: string[],
+  inputType: InputType,
 ): Promise<{ embeddings: number[][]; model: string }> {
   const apiKey = process.env.VOYAGE_API_KEY;
   const model = process.env.EMBEDDING_MODEL;
@@ -49,7 +52,7 @@ export async function embedDocuments(
       body: JSON.stringify({
         input: texts,
         model,
-        input_type: "document",
+        input_type: inputType,
         output_dimension: EMBEDDING_DIMENSIONS,
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -100,4 +103,19 @@ export async function embedDocuments(
   }
 
   return { embeddings, model };
+}
+
+// メモ・ファイルの chunk 用（保存時）。
+export async function embedDocuments(
+  texts: string[],
+): Promise<{ embeddings: number[][]; model: string }> {
+  return requestEmbeddings(texts, "document");
+}
+
+// 質問用（検索時）。1 件だけ送る。保存時と同じ EMBEDDING_MODEL・同じ 1024 次元で作る。
+export async function embedQuery(
+  text: string,
+): Promise<{ embedding: number[]; model: string }> {
+  const { embeddings, model } = await requestEmbeddings([text], "query");
+  return { embedding: embeddings[0], model };
 }

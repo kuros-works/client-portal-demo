@@ -159,9 +159,15 @@ This project uses **pnpm** only.
    RESEND_API_KEY=
    NOTIFY_FROM_EMAIL=
    ADMIN_NOTIFY_EMAIL=
+   VOYAGE_API_KEY=
+   EMBEDDING_MODEL=
+   ANTHROPIC_API_KEY=
+   ANSWER_MODEL=
    ```
 
    `NOTIFY_FROM_EMAIL` must use a domain verified in Resend. `ADMIN_NOTIFY_EMAIL` receives payment notifications. If any email variable is missing, emails are skipped and the app keeps working.
+
+   `VOYAGE_API_KEY` and `EMBEDDING_MODEL` (a Voyage model that supports 1024 dimensions) are used to embed project notes and questions. `ANTHROPIC_API_KEY` and `ANSWER_MODEL` (for example `claude-haiku-5-5`) are used to answer client questions about a project. These keys are used only on the server. If any of them is missing, saving a note or asking a question fails with an error message and the rest of the app keeps working.
 
    Use a Stripe test-mode secret key for `STRIPE_SECRET_KEY`. `STRIPE_WEBHOOK_SECRET` comes from the next step.
 
