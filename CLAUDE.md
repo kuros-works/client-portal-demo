@@ -46,7 +46,7 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 
 ## テーブル設計
 
-定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正、0003 が案件ごとの請求の準備、0004 が権限の締め直し、0005 が会社単位への切り替え、0006 が projects.client_id の削除と service_role の権限の締め直し）。本番に当てる前と後の確認・戻し方は `supabase/sql/`（`0005_verify.sql`・`0005_rollback.sql`・`0006_verify.sql`・`0006_rollback.sql`）。
+定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正、0003 が案件ごとの請求の準備、0004 が権限の締め直し、0005 が会社単位への切り替え、0006 が projects.client_id の削除と service_role の権限の締め直し、0007 が RAG 用の DB（vector 拡張・project_notes・project_chunks・match_project_chunks））。本番に当てる前と後の確認・戻し方は `supabase/sql/`（`0005_verify.sql`・`0005_rollback.sql`・`0006_verify.sql`・`0006_rollback.sql`・`0007_verify.sql`・`0007_rollback.sql`）。
 
 - **profiles**：id、email、name、role、created_at
   - id は auth.users(id) への外部キー（削除時は連動して削除）
@@ -70,18 +70,38 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 - **project_files**：id、project_id、file_name、storage_path、size、uploaded_at
   - project_id は projects(id) への外部キー（`on delete cascade`：案件を消すと行も消える。Storage の実体は消えない）
   - storage_path は一意。size は 0 以上
+  - (id, project_id) にも一意制約（`project_files_id_project_id_key`。0007 で追加。project_chunks の複合外部キーの参照先）
+- **project_notes**：project_id（主キー）、body、created_at、updated_at（0007）
+  - 1 案件 1 メモ。project_id は projects(id) への外部キー（`on delete cascade`）。body は必須
+  - updated_at は更新時にトリガー（`project_notes_set_updated_at`・関数は projects と同じ `set_updated_at()`）で自動更新する
+  - お客様に見せる前提の内容だけを書く（RAG の答えに使うので、書いたことはお客様に見えるのと同じ）
+- **project_chunks**：id、project_id、file_id、source_type、source_label、chunk_index、content、embedding、embedding_model、created_at（0007）
+  - メモ・ファイルを分割して埋め込みを付けた検索用の行。最初の版の取り込みはメモだけ
+  - project_id は projects(id) への外部キー（`on delete cascade`）
+  - source_type は `note` / `file`。`file` のときだけ file_id が必須（check 制約 `project_chunks_source_file_check`）
+  - (file_id, project_id) は project_files (id, project_id) への複合外部キー（`project_chunks_file_fkey`・`on delete cascade`・match simple）。別の案件のファイルを指せない。ファイルの行を消すと chunk も消える
+  - (project_id, source_type, file_id, chunk_index) は一意（`unique nulls not distinct`。file_id が null どうしも重複とみなす）。project_id での検索はこの索引を使う。HNSW 索引は作らない
+  - chunk_index は 0 以上。embedding は `extensions.vector(1024)`・必須。embedding_model は埋め込みを作ったモデル名（必須）
+  - 見え方の条件は chunk に写さず、ポリシーで projects を毎回見る（あとで請求を付けた案件の行も、自動で見えなくなる）
+- **match_project_chunks(query_embedding, match_count default 6, filter_project_id default null)**（0007）
+  - 見える chunk から、コサイン距離（`operator(extensions.<=>)`）の近い順に返す。返す列は id、project_id、source_type、source_label、content、similarity（embedding は返さない）
+  - filter_project_id が null なら見える全案件。件数は DB 側で 1〜10 に収める（null は 6）。query_embedding が null なら 0 件
+  - security invoker・`search_path = ''`・言語 sql・stable。呼んだ人の RLS がそのまま効く
+  - EXECUTE は authenticated だけ（PUBLIC・anon・service_role から revoke）。service_role で呼ぶと RLS を通らず全社の行が返るため、必ずユーザーのセッションで呼ぶ
+- **vector 拡張**：`extensions` スキーマ（0007）。authenticated が extensions スキーマの USAGE を持つ前提（Supabase の初期設定）
 - **stripe_events**：event_id（主キー）、event_type、session_id、amount_total、currency、payment_status、customer_email、received_at
   - Webhook の二重処理を防ぐため、受け取ったイベントを event_id で記録する
   - RLS は有効・ポリシーなし。service_role は select / insert だけ（update・delete もできない、書き足すだけの台帳。0006 で外した）。anon・authenticated には何も与えない
 - **Storage**：非公開バケット `project-files`（バケットの上限は 1 ファイル 10MB。アプリ側の上限は 4MB）
   - パスは `案件ID/<ファイルID>`（ファイルID は project_files.id と同じ）。元のファイル名は `file_name` 列に保存する
-- **RLS**：6 テーブルと storage.objects で有効。作成・変更・削除・招待は管理者のみ
+- **RLS**：8 テーブルと storage.objects で有効。作成・変更・削除・招待は管理者のみ
   - 各テーブルに「admin all」（管理者は全操作）と、お客様の閲覧用のポリシー（「client select own」など）を置く
-  - お客様が見られる範囲：profiles は自分の行、organizations は自分の会社、organization_members は自分の会社のメンバーの行、projects は自分の会社の案件、project_files は自分の会社の案件のファイル（その案件の amount が null または `paid` のときだけ）。owner と staff で見られる範囲は同じ
+  - お客様が見られる範囲：profiles は自分の行、organizations は自分の会社、organization_members は自分の会社のメンバーの行、projects は自分の会社の案件、project_files は自分の会社の案件のファイル（その案件の amount が null または `paid` のときだけ）、project_notes は自分の会社の案件のメモ（支払いの状態に関係なく）、project_chunks は自分の会社の案件の行（メモ由来はいつでも、ファイル由来は project_files と同じ条件）。owner と staff で見られる範囲は同じ
   - Storage は、パスの先頭フォルダが自分の会社の案件ID のファイルだけ読める（0002 で `storage.objects.name` を明示する形に修正済み。0003 で project_files と同じ支払いの条件を追加）
   - 管理者の判定は `is_admin()`、会社の判定は `is_org_member(org)`・`is_org_owner(org)`（どれも security definer・`search_path = ''`・実行できるのは authenticated のみ）。organization_members のポリシーが自分自身を参照して無限ループにならないよう、判定は必ずこの関数を通す
-  - 権限（0004 で「いったん revoke してから、アプリが使う分だけ grant」に整理。0005 の新しい表も同じ）：authenticated は profiles・organizations・organization_members が select だけ、projects が select と列ごとの insert / update（delete なし）、project_files が select / insert / delete。anon には何も与えない
-  - service_role は profiles・projects・project_files・organizations・organization_members の select / insert / update / delete（表全体）、stripe_events は select / insert だけ。TRUNCATE・REFERENCES・TRIGGER・MAINTAIN はどの表にも無い（0006 で外した）。RLS を通らない
+  - 権限（0004 で「いったん revoke してから、アプリが使う分だけ grant」に整理。0005・0007 の新しい表も同じ）：authenticated は profiles・organizations・organization_members が select だけ、projects が select と列ごとの insert / update（delete なし）、project_files が select / insert / delete、project_notes が select / insert / update、project_chunks が select / insert / delete（update なし）。anon には何も与えない
+  - project_notes・project_chunks の書き込みは、管理者本人のセッション（authenticated）＋「admin all」ポリシーで行う（この機能では service_role を使わない）
+  - service_role は profiles・projects・project_files・organizations・organization_members・project_notes・project_chunks の select / insert / update / delete（表全体。project_notes・project_chunks は seed 用）、stripe_events は select / insert だけ。TRUNCATE・REFERENCES・TRIGGER・MAINTAIN はどの表にも無い（0006・0007 で外した）。RLS を通らない
   - projects の列ごとの権限（authenticated）：insert は name、status、organization_id、amount / update は status、amount。payment_status・paid_at・stripe_session_id を書けるのは service_role（Webhook）だけ
   - Supabase の初期設定（default privileges）で、新しいテーブルには anon・authenticated・service_role の 3 つに全部の権限（arwdDxtm）が付く。テーブルを足すときは、0004・0006 と同じく revoke してから必要な分だけ grant する（「守るルール」参照）
   - MAINTAIN は Postgres 17 からの権限で、`information_schema` には出ない。確かめるときは `has_table_privilege` か `pg_class.relacl` を見る
@@ -133,6 +153,10 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 - projects.client_id の削除：
   - PR #10（client_id を書かないコード）は 2026-11-18 にマージ・本番で確認済み
   - 0006（client_id の削除・service_role の権限の締め直し）はローカルで確認済み（`0006_verify.sql` の PRE / POST・rollback → 再適用）。本番はこれから。当てる前と後に `supabase/sql/0006_verify.sql` を流す
-- 次は RAG（0007）
-- RLS の検証は `scripts/local-seed/`（ローカルの Supabase だけ）。seed は A社（owner・staff）と B社（owner）。`verify-rls.mjs` は 279 checks（うち列の確認 37・service_role の表の権限 6）。陽性対照（`--positive-control`）は 37 checks
+- RAG 用の DB（0007）：
+  - ローカルで確認済み（`0007_verify.sql` の PRE / POST・rollback → 再適用・verify-rls 384 PASS・陽性対照 A / B）
+  - 本番にはまだ当てていない。手順8で当てる（0008 と同じ朝）。当てる前と後に `supabase/sql/0007_verify.sql` を流す
+- 次は手順4（登録の処理）
+- RLS の検証は `scripts/local-seed/`（ローカルの Supabase だけ）。seed は A社（owner・staff）と B社（owner）、案件 6・ファイル 7・project_notes 6・project_chunks 13（埋め込みは偽物の 1024 次元・`dummy-1024`）。`verify-rls.mjs` は 384 checks（うち列の確認 49・service_role の表の権限 8・match_project_chunks の EXECUTE 3）。陽性対照（`--positive-control`）は 49 checks
+  - RAG の陽性対照は `scripts/local-seed/positive-control/`（ローカル専用・127.0.0.1:54322 だけ）。project_chunks の「client select own」を A（`using (true)`）にすると 32 FAIL、B（支払いの条件を外す）にすると 25 FAIL。`restore.sql` で戻すと qual が元と文字まで同じになり、384 PASS に戻る。手順は `scripts/local-seed/README.md`
 - 開発モードで `Date.now()` の Blocking Route 警告が残っているが、`pnpm build` は成功する

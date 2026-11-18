@@ -21,6 +21,8 @@ const EXPECTED_READABLE_COLUMNS = deepFreeze({
     stripe_events: [],
     organizations: [],
     organization_members: [],
+    project_notes: [],
+    project_chunks: [],
   },
   authenticated: {
     profiles: ["id", "email", "name", "role", "created_at"],
@@ -32,12 +34,19 @@ const EXPECTED_READABLE_COLUMNS = deepFreeze({
     stripe_events: [],
     organizations: ["id", "name", "created_at"],
     organization_members: ["organization_id", "user_id", "role", "created_at"],
+    project_notes: ["project_id", "body", "created_at", "updated_at"],
+    // embedding も読める（match_project_chunks は security invoker なので、呼ぶ人が読めないと検索できない）
+    project_chunks: [
+      "id", "project_id", "file_id", "source_type", "source_label", "chunk_index",
+      "content", "embedding", "embedding_model", "created_at",
+    ],
   },
 });
 const PUBLIC_TABLES = Object.keys(EXPECTED_READABLE_COLUMNS.authenticated);
 
-// service_role の表の権限（0006 の後）。service_role は RLS を通らないので、これがそのまま「できること」になる
+// service_role の表の権限（0007 の後）。service_role は RLS を通らないので、これがそのまま「できること」になる
 // TRUNCATE・REFERENCES・TRIGGER・MAINTAIN はどの表にも無い。stripe_events は select と insert だけの台帳
+// project_notes・project_chunks は seed 用に select / insert / update / delete
 const TABLE_PRIVILEGES = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN"];
 const EXPECTED_SERVICE_ROLE_PRIVILEGES = deepFreeze({
   profiles: ["SELECT", "INSERT", "UPDATE", "DELETE"],
@@ -46,7 +55,27 @@ const EXPECTED_SERVICE_ROLE_PRIVILEGES = deepFreeze({
   stripe_events: ["SELECT", "INSERT"],
   organizations: ["SELECT", "INSERT", "UPDATE", "DELETE"],
   organization_members: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  project_notes: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  project_chunks: ["SELECT", "INSERT", "UPDATE", "DELETE"],
 });
+
+// ---------- RAG（0007） ----------
+// match_project_chunks の EXECUTE は authenticated だけ（service_role で呼ぶと RLS を通らず全社の行が返るため）
+const RAG_RPC = "match_project_chunks";
+const RAG_RPC_SIGNATURE = "public.match_project_chunks(extensions.vector, integer, uuid)";
+const EXPECTED_RAG_RPC_EXECUTE = deepFreeze({ anon: false, authenticated: true, service_role: false });
+const MATCH_DEFAULT = 6; // match_count を省いたとき
+const MATCH_MAX = 10; // DB 側で 1〜10 に収める
+// seed.mjs と同じ作り方の偽の埋め込み（slot 番目だけ 1）。seed の slot は 0〜12 なので、
+// テストで作る行はそれと重ならない slot を使う
+const EMBEDDING_DIM = 1024;
+const EMBEDDING_MODEL = "dummy-1024";
+const PROBE_SLOT = 100; // #7・#8 のテスト用 chunk
+const WRITE_PROBE_SLOT = 200; // 書き込み拒否のテストで insert を試す chunk
+function fakeEmbedding(slot) {
+  return `[${Array.from({ length: EMBEDDING_DIM }, (_, i) => (i === slot ? 1 : 0)).join(",")}]`;
+}
+const isOne = (x) => typeof x === "number" && Math.abs(x - 1) < 1e-9;
 // 陽性対照（--positive-control）で期待値に足す、存在しない列
 const CONTROL_FAKE_COLUMN = "__control_missing__";
 const DEFAULT_CONTROL_TARGET = "projects.stripe_session_id";
@@ -62,14 +91,14 @@ const SEED_PASSWORD = "seed-local-only-pw"; // seed.mjs と同じ値
 const REPORT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "reports");
 const REPORT_FILE = resolve(REPORT_DIR, "verify-rls-latest.md");
 const CONTROL_REPORT_FILE = resolve(REPORT_DIR, "verify-rls-control.md");
-// migrations（0001・0003・0004・0005）にある public の関数
+// migrations（0001・0003・0004・0005・0007）にある public の関数
 const KNOWN_RPC = [
   "is_admin", "handle_new_user", "set_updated_at",
   "prevent_paid_amount_change", "prevent_profile_role_change", "rls_auto_enable",
-  "is_org_member", "is_org_owner",
+  "is_org_member", "is_org_owner", RAG_RPC,
 ];
-// authenticated が呼べてよい関数（RLS 用の判定）。それ以外はトリガー用で、誰も呼べない
-const AUTH_RPC = ["is_admin", "is_org_member", "is_org_owner"];
+// authenticated が呼べてよい関数（RLS 用の判定と、RAG の検索）。それ以外はトリガー用で、誰も呼べない
+const AUTH_RPC = ["is_admin", "is_org_member", "is_org_owner", RAG_RPC];
 const TRIGGER_RPC = KNOWN_RPC.filter((n) => !AUTH_RPC.includes(n));
 
 // ログインして試す立場（会社ごとの役割）
@@ -88,6 +117,8 @@ const orgIds = {}; // { a, b } の会社 ID
 let projects = [];
 let files = [];
 let members = []; // seed の会社の organization_members
+let notes = []; // seed の案件の project_notes
+let chunks = []; // seed の案件の project_chunks（embedding も含む）
 const results = [];
 const probePaths = new Set(); // このスクリプトが upload を試みたパス（掃除の対象はここだけ）
 const strayRemoved = [];
@@ -175,8 +206,14 @@ async function takeSnapshot() {
   must(o.error, "snapshot organizations");
   const m = await admin.from("organization_members").select("*").order("organization_id").order("user_id");
   must(m.error, "snapshot organization_members");
+  const n = await admin.from("project_notes").select("*").order("project_id");
+  must(n.error, "snapshot project_notes");
+  const ch = await admin.from("project_chunks").select("*").order("id");
+  must(ch.error, "snapshot project_chunks");
   const objects = await listAllObjects();
-  return JSON.stringify({ p: p.data, f: f.data, pr: pr.data, ev: ev.data, o: o.data, m: m.data, objects });
+  return JSON.stringify({
+    p: p.data, f: f.data, pr: pr.data, ev: ev.data, o: o.data, m: m.data, n: n.data, ch: ch.data, objects,
+  });
 }
 
 // このスクリプトが upload を試みたパスのうち、実際に残っているものだけ消す
@@ -243,11 +280,26 @@ async function loadSeed() {
   const f = await admin.from("project_files").select("*").in("project_id", projects.map((x) => x.id));
   must(f.error, "load project_files");
   files = f.data;
-  if (projects.length !== 6 || files.length !== 7 || members.length !== 3) {
+  const n = await admin.from("project_notes").select("*").in("project_id", projects.map((x) => x.id));
+  must(n.error, "load project_notes");
+  notes = n.data;
+  const ch = await admin.from("project_chunks").select("*").in("project_id", projects.map((x) => x.id));
+  must(ch.error, "load project_chunks");
+  chunks = ch.data;
+  if (projects.length !== 6 || files.length !== 7 || members.length !== 3 ||
+      notes.length !== 6 || chunks.length !== 13) {
     throw new Error(`unexpected seed shape (projects ${projects.length}, files ${files.length}, ` +
-      `members ${members.length}). Run seed.mjs`);
+      `members ${members.length}, notes ${notes.length}, chunks ${chunks.length}). Run seed.mjs`);
   }
 }
+
+// 案件ごとの「お客様から見えてよいか」。chunk はメモ由来ならいつでも、ファイル由来はファイルと同じ条件
+const projectVisible = (p) => p.amount === null || p.payment_status === "paid";
+const chunkVisible = (c) => c.source_type === "note" || projectVisible(projects.find((p) => p.id === c.project_id));
+const paidFileChunkOf = (projectList) => {
+  const paid = projectList.find((p) => p.payment_status === "paid");
+  return chunks.find((c) => c.project_id === paid?.id && c.source_type === "file");
+};
 
 // 期待値は、DB の中身（organization_id・amount・payment_status）から導く
 function tenantOf(t) {
@@ -255,8 +307,9 @@ function tenantOf(t) {
   const otherOrgId = Object.values(orgIds).find((id) => id !== orgId);
   const own = projects.filter((p) => p.organization_id === orgId);
   const other = projects.filter((p) => p.organization_id !== orgId);
-  const visible = (p) => p.amount === null || p.payment_status === "paid";
+  const visible = projectVisible;
   const filesOf = (ps) => files.filter((f) => ps.some((p) => p.id === f.project_id));
+  const chunksOf = (ps) => chunks.filter((c) => ps.some((p) => p.id === c.project_id));
   return {
     ...t, orgId, otherOrgId, own, other,
     ownMembers: members.filter((x) => x.organization_id === orgId),
@@ -265,6 +318,13 @@ function tenantOf(t) {
     otherFiles: filesOf(other),
     unpaid: own.find((p) => p.amount !== null && p.payment_status === "unpaid"),
     paid: own.find((p) => p.payment_status === "paid"),
+    ownNotes: notes.filter((x) => own.some((p) => p.id === x.project_id)),
+    otherNotes: notes.filter((x) => other.some((p) => p.id === x.project_id)),
+    ownVisibleChunks: chunksOf(own).filter(chunkVisible),
+    ownHiddenChunks: chunksOf(own).filter((c) => !chunkVisible(c)),
+    otherChunks: chunksOf(other),
+    ownPaidFileChunk: paidFileChunkOf(own), // A社なら A-3、B社なら B-3 のファイル由来の chunk
+    otherPaidFileChunk: paidFileChunkOf(other), // A社から見た B-3（#4 の検索に使う）
   };
 }
 
@@ -302,6 +362,13 @@ async function runAnon() {
     anon.from("projects").update({ status: "delivered" }).eq("id", some.id).select());
   await writeTest(role, "delete projects", () =>
     anon.from("projects").delete().eq("id", some.id).select());
+  await writeTest(role, "update project_notes", () =>
+    anon.from("project_notes").update({ body: "verify-probe" }).eq("project_id", some.id).select());
+  await writeTest(role, "insert project_chunks", () =>
+    anon.from("project_chunks").insert({
+      project_id: some.id, source_type: "note", source_label: "verify-probe", chunk_index: 99,
+      content: "verify-probe", embedding: fakeEmbedding(WRITE_PROBE_SLOT), embedding_model: EMBEDDING_MODEL,
+    }).select());
 
   const list = await attempt(() => anon.storage.from(BUCKET).list("", { limit: 1000 }));
   record(role, "storage list (root)", "denied (error or empty)", describe(list), isDenied(list));
@@ -335,6 +402,8 @@ async function runAnon() {
     const r = await attempt(() => anon.rpc(fn, { org: orgIds.a }));
     record(role, `rpc ${fn}(company A)`, "denied (error)", r.error ? describe(r) : `data=${r.data}`, !!r.error);
   }
+  const rag = await attempt(() => anon.rpc(RAG_RPC, { query_embedding: chunks[0].embedding }));
+  record(role, `rpc ${RAG_RPC}`, "denied (error)", describe(rag), !!rag.error);
   for (const fn of TRIGGER_RPC) {
     await writeTest(role, `rpc ${fn}`, () => anon.rpc(fn), "denied (error), data unchanged");
   }
@@ -419,6 +488,77 @@ async function runTenant(t, c) {
   r = await attempt(() => c.from("project_files").select("id").in("id", otherFileIds));
   record(role, "select other company's file rows by id", "0 rows", describe(r), isDenied(r));
 
+  // --- RAG：メモと chunk（0007）
+  const visChunkIds = t.ownVisibleChunks.map((x) => x.id);
+  const hiddenChunkIds = t.ownHiddenChunks.map((x) => x.id);
+  const otherChunkIds = t.otherChunks.map((x) => x.id);
+  const chunkLabel = (ids) => {
+    const notesN = chunks.filter((x) => ids.includes(x.id) && x.source_type === "note").length;
+    return `${ids.length} (note ${notesN}, file ${ids.length - notesN})`;
+  };
+
+  r = await attempt(() => c.from("project_notes").select("project_id"));
+  record(role, "select project_notes", `own only: ${nameList(t.ownNotes.map((x) => x.project_id))}`,
+    r.error ? describe(r) : `${r.data.length}: ${nameList(r.data.map((x) => x.project_id))}`,
+    !r.error && sameSet(r.data.map((x) => x.project_id), t.ownNotes.map((x) => x.project_id)));
+  r = await attempt(() => c.from("project_notes").select("project_id")
+    .in("project_id", t.otherNotes.map((x) => x.project_id)));
+  record(role, "select other company's project_notes by project_id", "0 rows", describe(r), isDenied(r));
+
+  r = await attempt(() => c.from("project_chunks").select("id,project_id,source_type"));
+  record(role, "select project_chunks", `${chunkLabel(visChunkIds)}, own visible only`,
+    r.error ? describe(r) : `${chunkLabel(r.data.map((x) => x.id))} from ${nameList(r.data.map((x) => x.project_id))}`,
+    !r.error && sameSet(r.data.map((x) => x.id), visChunkIds));
+  r = await attempt(() => c.from("project_chunks").select("id").in("id", hiddenChunkIds));
+  record(role, "select own unpaid project's file chunks by id", "0 rows", describe(r), isDenied(r));
+  r = await attempt(() => c.from("project_chunks").select("id").in("id", otherChunkIds));
+  record(role, "select other company's chunks by id", "0 rows", describe(r), isDenied(r));
+  r = await attempt(() => c.from("projects").select("id,project_chunks(id)"));
+  const embeddedChunks = r.error ? [] : r.data.flatMap((p) => p.project_chunks.map((x) => x.id));
+  record(role, "select projects with embedded project_chunks", `${visChunkIds.length} chunks (visible only)`,
+    r.error ? describe(r) : `${embeddedChunks.length} chunks`,
+    !r.error && sameSet(embeddedChunks, visChunkIds));
+
+  // --- RAG：検索（match_project_chunks）
+  const match = (args) => attempt(() => c.rpc(RAG_RPC, args));
+  const rowIds = (x) => (x.error ? [] : x.data.map((row) => row.id));
+  const within = (x, allowed) => !x.error && x.data.every((row) => allowed.includes(row.id));
+  const matchText = (x) => (x.error ? describe(x) : `${x.data.length} row(s)` +
+    (x.data[0] ? `, top: ${chunks.find((ch) => ch.id === x.data[0].id)?.content.split(" ")[0] ?? "unknown"}` +
+      ` (sim ${Number(x.data[0].similarity).toFixed(3)})` : ""));
+
+  // #4：他社の支払い済みファイル由来の chunk と同じベクトルで探しても、他社の行は 0 件（自社の見える行だけ）
+  r = await match({ query_embedding: t.otherPaidFileChunk.embedding });
+  const expectN = Math.min(MATCH_DEFAULT, visChunkIds.length);
+  record(role, `rpc ${RAG_RPC} (other company's paid file vector)`,
+    `0 rows from other company; ${expectN} own visible rows`, matchText(r),
+    within(r, visChunkIds) && !rowIds(r).some((x) => otherChunkIds.includes(x)) && r.data.length === expectN);
+  // 対照：自社の支払い済みファイル由来の chunk のベクトルなら、その行が 1 件目（類似度 1）
+  r = await match({ query_embedding: t.ownPaidFileChunk.embedding });
+  record(role, `rpc ${RAG_RPC} (own paid file vector, control)`,
+    `top: ${t.ownPaidFileChunk.content.split(" ")[0]} (sim 1.000)`, matchText(r),
+    !r.error && r.data[0]?.id === t.ownPaidFileChunk.id && isOne(r.data[0]?.similarity));
+  // 自社の未払いファイル由来の chunk のベクトルでも、その行は返らない
+  r = await match({ query_embedding: t.ownHiddenChunks[0].embedding, match_count: MATCH_MAX });
+  record(role, `rpc ${RAG_RPC} (own unpaid file vector)`, "hidden chunk not returned", matchText(r),
+    within(r, visChunkIds) && !rowIds(r).some((x) => hiddenChunkIds.includes(x)));
+  // filter_project_id
+  r = await match({ query_embedding: t.ownPaidFileChunk.embedding, filter_project_id: t.other[0].id });
+  record(role, `rpc ${RAG_RPC} (filter: other company's project)`, "0 rows", matchText(r),
+    !r.error && r.data.length === 0);
+  const unpaidVisible = t.ownVisibleChunks.filter((x) => x.project_id === t.unpaid.id).map((x) => x.id);
+  r = await match({ query_embedding: t.ownPaidFileChunk.embedding, match_count: MATCH_MAX,
+    filter_project_id: t.unpaid.id });
+  record(role, `rpc ${RAG_RPC} (filter: own unpaid project)`, `${unpaidVisible.length} note chunk(s) only`,
+    matchText(r), !r.error && sameSet(rowIds(r), unpaidVisible));
+  // #5：件数は 1〜10 に収まる（自社の見える行は 10 以下なので、1000 では見える行が全部返る）
+  r = await match({ query_embedding: t.ownPaidFileChunk.embedding, match_count: 1000 });
+  record(role, `rpc ${RAG_RPC} (match_count 1000)`, `<= ${MATCH_MAX} (all ${visChunkIds.length} visible)`,
+    matchText(r), !r.error && r.data.length <= MATCH_MAX && sameSet(rowIds(r), visChunkIds));
+  r = await match({ query_embedding: t.ownPaidFileChunk.embedding, match_count: 0 });
+  record(role, `rpc ${RAG_RPC} (match_count 0)`, "1 row", matchText(r),
+    !r.error && r.data.length === 1 && within(r, visChunkIds));
+
   // --- 書き込み（すべて拒否。0 件で終わった場合も、読み直してデータが同じなら PASS）
   const other = t.other[0];
   const otherFile = t.otherFiles[0];
@@ -496,6 +636,32 @@ async function runTenant(t, c) {
     c.from("organization_members").delete().eq("organization_id", t.orgId).select());
   await writeTest(role, "delete other company's member rows", () =>
     c.from("organization_members").delete().eq("organization_id", t.otherOrgId).select());
+
+  // メモと chunk：書き込みは全部できない（管理者だけ）
+  const ownNoteProject = t.ownNotes[0].project_id;
+  const otherNoteProject = t.otherNotes[0].project_id;
+  const chunkProbe = (projectId) => ({
+    project_id: projectId, source_type: "note", source_label: "verify-probe", chunk_index: 99,
+    content: "verify-probe", embedding: fakeEmbedding(WRITE_PROBE_SLOT), embedding_model: EMBEDDING_MODEL,
+  });
+  await writeTest(role, "upsert project_notes (own project)", () =>
+    c.from("project_notes").upsert({ project_id: ownNoteProject, body: "verify-probe" }).select());
+  await writeTest(role, "update own project_notes (body)", () =>
+    c.from("project_notes").update({ body: "verify-probe" }).eq("project_id", ownNoteProject).select());
+  await writeTest(role, "update other company's project_notes (body)", () =>
+    c.from("project_notes").update({ body: "verify-probe" }).eq("project_id", otherNoteProject).select());
+  await writeTest(role, "delete own project_notes", () =>
+    c.from("project_notes").delete().eq("project_id", ownNoteProject).select());
+  await writeTest(role, "insert project_chunks (own project)", () =>
+    c.from("project_chunks").insert(chunkProbe(t.own[0].id)).select());
+  await writeTest(role, "insert project_chunks (other company's project)", () =>
+    c.from("project_chunks").insert(chunkProbe(other.id)).select());
+  await writeTest(role, "update own visible project_chunks (content)", () =>
+    c.from("project_chunks").update({ content: "verify-probe" }).eq("id", visChunkIds[0]).select());
+  await writeTest(role, "delete own visible project_chunks", () =>
+    c.from("project_chunks").delete().eq("id", visChunkIds[0]).select());
+  await writeTest(role, "delete other company's project_chunks", () =>
+    c.from("project_chunks").delete().in("id", otherChunkIds).select());
 
   // --- Storage
   const visPaths = t.ownVisibleFiles.map((f) => f.storage_path);
@@ -579,7 +745,8 @@ async function runAdmin() {
     must(r.error, `count ${table}`);
     return r.count;
   };
-  for (const table of ["projects", "project_files", "profiles", "organizations", "organization_members"]) {
+  for (const table of ["projects", "project_files", "profiles", "organizations", "organization_members",
+    "project_notes", "project_chunks"]) {
     const expected = await total(table);
     const r = await attempt(() => c.from(table).select("*", { count: "exact", head: true }));
     record(role, `count ${table}`, `${expected} (all rows)`, r.error ? describe(r) : `count=${r.count}`,
@@ -591,6 +758,130 @@ async function runAdmin() {
   record(role, "select stripe_events", "denied (service_role only)", describe(ev), isDenied(ev));
   const who = await attempt(() => c.rpc("is_admin"));
   record(role, "rpc is_admin", "true", who.error ? describe(who) : `data=${who.data}`, !who.error && who.data === true);
+
+  // RAG の検索：管理者は全社の行が対象
+  const b3 = paidFileChunkOf(projects.filter((p) => p.organization_id === orgIds.b));
+  const match = (args) => attempt(() => c.rpc(RAG_RPC, args));
+  let r = await match({ query_embedding: b3.embedding });
+  record(role, `rpc ${RAG_RPC} (B-3 paid file vector)`, `${MATCH_DEFAULT} rows, top: B-3 file chunk (sim 1.000)`,
+    r.error ? describe(r) : `${r.data.length} row(s), top sim ${Number(r.data[0]?.similarity).toFixed(3)}`,
+    !r.error && r.data.length === MATCH_DEFAULT && r.data[0]?.id === b3.id && isOne(r.data[0]?.similarity));
+  // #5：全 13 行が見えるので、1000 を渡しても 10 件で止まる
+  r = await match({ query_embedding: b3.embedding, match_count: 1000 });
+  record(role, `rpc ${RAG_RPC} (match_count 1000)`, `${MATCH_MAX} rows (of ${chunks.length} visible)`,
+    describe(r), !r.error && r.data.length === MATCH_MAX);
+  r = await match({ query_embedding: b3.embedding, match_count: 0 });
+  record(role, `rpc ${RAG_RPC} (match_count 0)`, "1 row", describe(r), !r.error && r.data.length === 1);
+}
+
+// ---------- #7・#8. 支払い後に見える・ファイルを消すと chunk も消える ----------
+// seed の既存データは触らない。A社にテスト用の案件（amount あり・unpaid）とファイル 1 行・
+// そのファイル由来の chunk 1 行を service_role で作り、最後に finally で必ず消す
+// （Storage の実体は作らない。project_files の行だけ）
+async function runPaywallAndCascade() {
+  const owner = await signIn(`client-a${DOMAIN}`);
+  const staff = await signIn(`client-a-staff${DOMAIN}`);
+  const otherOrg = await signIn(`client-b${DOMAIN}`);
+  const adminUser = await signIn(`admin${DOMAIN}`);
+  const viewers = [["client-a", owner], ["client-a-staff", staff]];
+  const probeEmbedding = fakeEmbedding(PROBE_SLOT);
+  let projectId = null;
+
+  try {
+    const p = await admin.from("projects").insert({
+      name: "verify-probe-paywall", status: "in_progress", organization_id: orgIds.a, amount: 100,
+    }).select("id").single();
+    must(p.error, "insert probe project");
+    projectId = p.data.id;
+    const fileId = randomUUID();
+    const f = await admin.from("project_files").insert({
+      id: fileId, project_id: projectId, file_name: "verify-probe.txt",
+      storage_path: `${projectId}/verify-probe-${fileId}`, size: 1,
+    });
+    must(f.error, "insert probe project_files");
+    const ch = await admin.from("project_chunks").insert({
+      project_id: projectId, file_id: fileId, source_type: "file", source_label: "verify-probe.txt",
+      chunk_index: 0, content: "CANARY-PROBE-FILE", embedding: probeEmbedding, embedding_model: EMBEDDING_MODEL,
+    }).select("id").single();
+    must(ch.error, "insert probe project_chunks");
+    const chunkId = ch.data.id;
+
+    const see = (c) => attempt(() => c.from("project_chunks").select("id").eq("id", chunkId));
+    const search = (c) => attempt(() => c.rpc(RAG_RPC, {
+      query_embedding: probeEmbedding, match_count: MATCH_MAX, filter_project_id: projectId,
+    }));
+
+    // #7 前半：未払いの間は見えない
+    for (const [label, c] of viewers) {
+      let r = await see(c);
+      record(label, "[#7] select probe file chunk (unpaid)", "0 rows", describe(r), isDenied(r));
+      r = await search(c);
+      record(label, `[#7] rpc ${RAG_RPC} probe project (unpaid)`, "0 rows", describe(r),
+        !r.error && r.data.length === 0);
+    }
+
+    // #7 後半：paid にすると見える（paid_at は制約で必須）
+    const u = await admin.from("projects")
+      .update({ payment_status: "paid", paid_at: new Date().toISOString() }).eq("id", projectId);
+    must(u.error, "mark probe project paid");
+    for (const [label, c] of viewers) {
+      let r = await see(c);
+      record(label, "[#7] select probe file chunk (paid)", "1 row", describe(r),
+        !r.error && r.data.length === 1 && r.data[0].id === chunkId);
+      r = await search(c);
+      record(label, `[#7] rpc ${RAG_RPC} probe project (paid)`, "1 row (probe chunk, sim 1.000)",
+        r.error ? describe(r) : `${r.data.length} row(s), top sim ${Number(r.data[0]?.similarity).toFixed(3)}`,
+        !r.error && r.data.length === 1 && r.data[0].id === chunkId && isOne(r.data[0].similarity));
+    }
+    // 支払い済みでも、他社からは見えない
+    const rb = await see(otherOrg);
+    record("client-b", "[#7] select company A's probe file chunk (paid)", "0 rows", describe(rb), isDenied(rb));
+
+    // #8：管理者（authenticated・admin ポリシー）がファイルの行を消すと、chunk も連鎖で消える
+    const d = await attempt(() => adminUser.from("project_files").delete().eq("id", fileId).select("id"));
+    record("admin", "[#8] delete probe project_files row", "1 row deleted", describe(d),
+      !d.error && d.data?.length === 1);
+    const left = await admin.from("project_chunks").select("id", { count: "exact", head: true }).eq("id", chunkId);
+    must(left.error, "count probe chunk after file delete");
+    record("service", "[#8] probe file chunk after its file is deleted", "0 rows (cascaded)",
+      `count=${left.count}`, left.count === 0);
+  } catch (e) {
+    record("service", "[#7/#8] probe setup or checks", "no exception", `exception: ${e.message}`, false);
+  } finally {
+    // 途中で失敗しても、テスト用の案件は必ず消す（ファイル・chunk も連鎖で消える）
+    if (projectId) {
+      const del = await attempt(() => admin.from("projects").delete().eq("id", projectId));
+      const chk = await attempt(() =>
+        admin.from("projects").select("id", { count: "exact", head: true }).eq("id", projectId));
+      record("service", "[#7/#8] probe project removed", "0 rows left",
+        del.error ? errText(del.error) : chk.error ? errText(chk.error) : `count=${chk.count}`,
+        !del.error && !chk.error && chk.count === 0);
+    }
+  }
+}
+
+// ---------- match_project_chunks の EXECUTE（ローカルの Postgres で has_function_privilege） ----------
+// service_role で呼ぶと RLS を通らず全社の行が返るので、EXECUTE は authenticated だけ
+const RAG_RPC_EXECUTE_SQL = `
+  select r.role,
+         has_function_privilege(r.role::name, $1::text, 'EXECUTE') as can_execute
+  from (values ('anon'), ('authenticated'), ('service_role')) as r(role)
+  order by 1`;
+
+async function runRagFunctionPrivileges() {
+  let rows;
+  try {
+    rows = await queryLocalDb(RAG_RPC_EXECUTE_SQL, [RAG_RPC_SIGNATURE]);
+  } catch (e) {
+    record("grants:function", `query EXECUTE on ${RAG_RPC} (local Postgres)`, "query succeeds",
+      `error: ${String(e.message).slice(0, 70)}`, false);
+    return;
+  }
+  for (const [roleName, expected] of Object.entries(EXPECTED_RAG_RPC_EXECUTE)) {
+    const row = rows.find((x) => x.role === roleName);
+    record("grants:function", `EXECUTE on ${RAG_RPC} for ${roleName}`, String(expected),
+      row ? String(row.can_execute) : "missing", row?.can_execute === expected);
+  }
 }
 
 // ---------- 列の読み取り（SELECT）の確認 ----------
@@ -920,8 +1211,10 @@ async function main() {
     await runTenant(t, await signIn(t.email));
   }
   await runAdmin();
+  await runPaywallAndCascade();
   await runColumnChecks({ expected: EXPECTED_READABLE_COLUMNS, control: null });
   await runServiceRolePrivileges();
+  await runRagFunctionPrivileges();
   await runRpcList();
   await runCleanupCheck(initial);
 
