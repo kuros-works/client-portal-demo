@@ -4,7 +4,9 @@ import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 
 import { requireAdmin } from "@/lib/auth";
+import { MAX_NOTE_LENGTH, splitIntoChunks } from "@/lib/chunk";
 import { sendStatusChangedEmail } from "@/lib/email";
+import { EmbeddingError, embedDocuments } from "@/lib/embeddings";
 import { parseDollarsToCents } from "@/lib/project-amount";
 import { MAX_FILE_SIZE, PROJECT_FILES_BUCKET } from "@/lib/project-files";
 import { isProjectStatus } from "@/lib/project-status";
@@ -545,4 +547,123 @@ export async function deleteProjectFile(
 
   revalidatePath("/admin");
   return { status: "deleted" };
+}
+
+export type NoteFormState = {
+  status:
+    | "idle"
+    | "saved"
+    | "invalid"
+    | "too_long"
+    | "not_found"
+    | "rate_limited"
+    | "embedding_failed"
+    | "error";
+};
+
+// 案件メモを保存し、検索用の chunk を入れ直す。
+// 書き込みは管理者本人のセッション（createClient）だけで行う（service_role は使わない）。
+// 順番：埋め込み → chunk を消す → chunk を入れる → メモを upsert。
+// 埋め込みに失敗したら、何も書かない。
+// 既知の制限：消す・入れる・upsert は 1 つのトランザクションではないので、
+// 途中で失敗するとメモと chunk がずれることがある（次に保存し直すと直る）。
+export async function saveProjectNote(
+  _prevState: NoteFormState,
+  formData: FormData,
+): Promise<NoteFormState> {
+  await requireAdmin();
+
+  const projectId = String(formData.get("project_id") ?? "");
+  if (!UUID_PATTERN.test(projectId)) {
+    return { status: "invalid" };
+  }
+
+  const body = String(formData.get("body") ?? "").trim();
+  if (!body) {
+    return { status: "invalid" };
+  }
+  if (body.length > MAX_NOTE_LENGTH) {
+    return { status: "too_long" };
+  }
+
+  const supabase = await createClient();
+
+  const { data: project, error: selectError } = await supabase
+    .from("projects")
+    .select("id")
+    .eq("id", projectId)
+    .maybeSingle();
+
+  if (selectError) {
+    console.error("load project for note failed:", selectError.code);
+    return { status: "error" };
+  }
+  if (!project) {
+    return { status: "not_found" };
+  }
+
+  const chunks = splitIntoChunks(body);
+  if (chunks.length === 0) {
+    return { status: "invalid" };
+  }
+
+  // Voyage へのリクエストは 1 回だけ（全 chunk をまとめて送る）
+  let embedded: Awaited<ReturnType<typeof embedDocuments>>;
+  try {
+    embedded = await embedDocuments(chunks);
+  } catch (error) {
+    if (error instanceof EmbeddingError) {
+      // ログは embeddings.ts 側で出している
+      return {
+        status: error.kind === "rate_limited" ? "rate_limited" : "embedding_failed",
+      };
+    }
+    // 想定外の例外。種類（名前）だけ残す
+    console.error(
+      "embedding failed: unexpected",
+      error instanceof Error ? error.name : "unknown",
+    );
+    return { status: "embedding_failed" };
+  }
+
+  const { error: deleteError } = await supabase
+    .from("project_chunks")
+    .delete()
+    .eq("project_id", projectId)
+    .eq("source_type", "note");
+
+  if (deleteError) {
+    console.error("delete note chunks failed:", deleteError.code);
+    return { status: "error" };
+  }
+
+  const { error: insertError } = await supabase.from("project_chunks").insert(
+    chunks.map((content, index) => ({
+      project_id: projectId,
+      source_type: "note",
+      source_label: "Project note",
+      chunk_index: index,
+      content,
+      // pgvector は "[0.1,0.2,…]" の文字列で受け取れる
+      embedding: JSON.stringify(embedded.embeddings[index]),
+      embedding_model: embedded.model,
+    })),
+  );
+
+  if (insertError) {
+    console.error("insert note chunks failed:", insertError.code);
+    return { status: "error" };
+  }
+
+  const { error: upsertError } = await supabase
+    .from("project_notes")
+    .upsert({ project_id: projectId, body }, { onConflict: "project_id" });
+
+  if (upsertError) {
+    console.error("upsert project note failed:", upsertError.code);
+    return { status: "error" };
+  }
+
+  revalidatePath("/admin");
+  return { status: "saved" };
 }

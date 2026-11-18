@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { AmountForm } from "./amount-form";
 import { FileDeleteForm } from "./file-delete-form";
 import { FileUploadForm } from "./file-upload-form";
+import { NoteForm } from "./note-form";
 import { OwnerInviteForm, StaffInviteForm } from "./invite-form";
 import { ProjectForm } from "./project-form";
 import { StatusForm } from "./status-form";
@@ -38,7 +39,7 @@ async function AdminContent() {
     supabase
       .from("projects")
       .select(
-        "id, name, status, amount, payment_status, created_at, organizations(name), project_files(id, file_name, size, uploaded_at)",
+        "id, name, status, amount, payment_status, created_at, organizations(name), project_notes(body), project_files(id, file_name, size, uploaded_at)",
       )
       .order("created_at", { ascending: false })
       .order("uploaded_at", {
@@ -138,6 +139,13 @@ async function AdminContent() {
                   paymentStatus={project.payment_status}
                 />
                 <FileUploadForm projectId={project.id} />
+              </div>
+
+              <div className="border-t p-5">
+                <NoteForm
+                  projectId={project.id}
+                  body={one(project.project_notes)?.body ?? null}
+                />
               </div>
 
               {project.project_files.length === 0 ? (

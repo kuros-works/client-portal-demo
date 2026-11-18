@@ -73,6 +73,7 @@ This is a focused demo, so some things are left out on purpose:
 - No large files (uploads are limited to 4 MB).
 - No subscriptions, installments, or in-app refunds. Payments are one invoice per project, in USD.
 - No custom design system or CMS.
+- Known limitation: saving a project note re-creates its search chunks in separate steps (not one transaction), so a failure partway can leave the note and its chunks out of sync until the next save.
 
 ## Security design
 
