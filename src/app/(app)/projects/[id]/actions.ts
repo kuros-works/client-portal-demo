@@ -123,6 +123,7 @@ export type AskFormState = {
     | "too_long"
     | "not_found"
     | "no_sources"
+    | "daily_limit"
     | "rate_limited"
     | "unavailable"
     | "error";
@@ -178,6 +179,21 @@ export async function askQuestion(
   // 見つからない場合と他人の案件は区別しない
   if (!project) {
     return { status: "not_found" };
+  }
+
+  // 1 日の回数を 1 回分使う（本人のセッションで呼ぶ。だれの回数かは DB 側が auth.uid() で決める）。
+  // ここから先は外部 API を呼ぶので、失敗した質問・資料が見つからない質問も 1 回と数える。
+  // 回数を確かめられなければ、Voyage・Claude は呼ばずに止める
+  const { data: quota, error: quotaError } = await supabase
+    .rpc("consume_question_quota")
+    .single<{ allowed: boolean; remaining: number }>();
+
+  if (quotaError) {
+    console.error("consume question quota failed:", quotaError.code);
+    return { status: "error" };
+  }
+  if (!quota.allowed) {
+    return { status: "daily_limit" };
   }
 
   // 質問をベクトルにする（ログは embeddings.ts 側で出している）

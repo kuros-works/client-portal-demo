@@ -1,6 +1,9 @@
 // RLS 検証：anon・A社オーナー・A社スタッフ・B社オーナー・管理者の立場で操作して、期待どおりか確認する。
 // 攻撃役は anon キー＋パスワードログインだけ。service_role は「準備」「読み直し」
 // 「このスクリプトが作った Storage の残骸の掃除」にだけ使う。
+// ローカルの Postgres（127.0.0.1 だけ）には、ふだんは読むだけでつなぐ。書き込みもできる接続は
+// 「question_usage の seed ユーザーの行の削除」と「rollback で終わるトランザクション」の 2 つだけに使う
+// （question_usage は service_role からも読み書きできないため）。
 // FAIL が出ても RLS や migrations は直さない（報告だけ）。
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -23,6 +26,7 @@ const EXPECTED_READABLE_COLUMNS = deepFreeze({
     organization_members: [],
     project_notes: [],
     project_chunks: [],
+    question_usage: [],
   },
   authenticated: {
     profiles: ["id", "email", "name", "role", "created_at"],
@@ -40,13 +44,15 @@ const EXPECTED_READABLE_COLUMNS = deepFreeze({
       "id", "project_id", "file_id", "source_type", "source_label", "chunk_index",
       "content", "embedding", "embedding_model", "created_at",
     ],
+    // 回数の表（0008）は読めない。読み書きは consume_question_quota（security definer）からだけ
+    question_usage: [],
   },
 });
 const PUBLIC_TABLES = Object.keys(EXPECTED_READABLE_COLUMNS.authenticated);
 
-// service_role の表の権限（0007 の後）。service_role は RLS を通らないので、これがそのまま「できること」になる
+// service_role の表の権限（0008 の後）。service_role は RLS を通らないので、これがそのまま「できること」になる
 // TRUNCATE・REFERENCES・TRIGGER・MAINTAIN はどの表にも無い。stripe_events は select と insert だけの台帳
-// project_notes・project_chunks は seed 用に select / insert / update / delete
+// project_notes・project_chunks は seed 用に select / insert / update / delete。question_usage は何も無い
 const TABLE_PRIVILEGES = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN"];
 const EXPECTED_SERVICE_ROLE_PRIVILEGES = deepFreeze({
   profiles: ["SELECT", "INSERT", "UPDATE", "DELETE"],
@@ -57,6 +63,7 @@ const EXPECTED_SERVICE_ROLE_PRIVILEGES = deepFreeze({
   organization_members: ["SELECT", "INSERT", "UPDATE", "DELETE"],
   project_notes: ["SELECT", "INSERT", "UPDATE", "DELETE"],
   project_chunks: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  question_usage: [],
 });
 
 // ---------- RAG（0007） ----------
@@ -64,6 +71,21 @@ const EXPECTED_SERVICE_ROLE_PRIVILEGES = deepFreeze({
 const RAG_RPC = "match_project_chunks";
 const RAG_RPC_SIGNATURE = "public.match_project_chunks(extensions.vector, integer, uuid)";
 const EXPECTED_RAG_RPC_EXECUTE = deepFreeze({ anon: false, authenticated: true, service_role: false });
+
+// ---------- 質問の回数制限（0008） ----------
+// consume_question_quota の EXECUTE は authenticated だけ。question_usage は anon・authenticated から何もできない
+const QUOTA_RPC = "consume_question_quota";
+const QUOTA_RPC_SIGNATURE = "public.consume_question_quota()";
+const EXPECTED_QUOTA_RPC_EXECUTE = deepFreeze({ anon: false, authenticated: true, service_role: false });
+const EXPECTED_QUOTA_TABLE_PRIVILEGES = deepFreeze({ anon: [], authenticated: [] });
+const DAILY_QUESTION_LIMIT = 20; // 0008 の daily_limit と同じ
+const CONCURRENT_QUOTA_CALLS = 25; // 同時に呼ぶ回数（上限より多く）
+
+// EXECUTE を確かめる関数（ローカルの Postgres で has_function_privilege）
+const FUNCTION_EXECUTE_CHECKS = deepFreeze([
+  { name: RAG_RPC, signature: RAG_RPC_SIGNATURE, expected: EXPECTED_RAG_RPC_EXECUTE },
+  { name: QUOTA_RPC, signature: QUOTA_RPC_SIGNATURE, expected: EXPECTED_QUOTA_RPC_EXECUTE },
+]);
 const MATCH_DEFAULT = 6; // match_count を省いたとき
 const MATCH_MAX = 10; // DB 側で 1〜10 に収める
 // seed.mjs と同じ作り方の偽の埋め込み（slot 番目だけ 1）。seed の slot は 0〜12 なので、
@@ -91,14 +113,15 @@ const SEED_PASSWORD = "seed-local-only-pw"; // seed.mjs と同じ値
 const REPORT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "reports");
 const REPORT_FILE = resolve(REPORT_DIR, "verify-rls-latest.md");
 const CONTROL_REPORT_FILE = resolve(REPORT_DIR, "verify-rls-control.md");
-// migrations（0001・0003・0004・0005・0007）にある public の関数
+// migrations（0001・0003・0004・0005・0007・0008）にある public の関数
 const KNOWN_RPC = [
   "is_admin", "handle_new_user", "set_updated_at",
   "prevent_paid_amount_change", "prevent_profile_role_change", "rls_auto_enable",
-  "is_org_member", "is_org_owner", RAG_RPC,
+  "is_org_member", "is_org_owner", RAG_RPC, QUOTA_RPC,
 ];
-// authenticated が呼べてよい関数（RLS 用の判定と、RAG の検索）。それ以外はトリガー用で、誰も呼べない
-const AUTH_RPC = ["is_admin", "is_org_member", "is_org_owner", RAG_RPC];
+// authenticated が呼べてよい関数（RLS 用の判定・RAG の検索・質問の回数）。それ以外はトリガー用で、誰も呼べない
+// （QUOTA_RPC は呼ぶと回数が増えるので、TRIGGER_RPC のように全員で呼ぶループには入れない）
+const AUTH_RPC = ["is_admin", "is_org_member", "is_org_owner", RAG_RPC, QUOTA_RPC];
 const TRIGGER_RPC = KNOWN_RPC.filter((n) => !AUTH_RPC.includes(n));
 
 // ログインして試す立場（会社ごとの役割）
@@ -210,11 +233,17 @@ async function takeSnapshot() {
   must(n.error, "snapshot project_notes");
   const ch = await admin.from("project_chunks").select("*").order("id");
   must(ch.error, "snapshot project_chunks");
+  // question_usage は service_role から読めないので、ローカルの Postgres で読む（読むだけ）
+  const qu = await queryLocalDb(QUOTA_SNAPSHOT_SQL);
   const objects = await listAllObjects();
   return JSON.stringify({
-    p: p.data, f: f.data, pr: pr.data, ev: ev.data, o: o.data, m: m.data, n: n.data, ch: ch.data, objects,
+    p: p.data, f: f.data, pr: pr.data, ev: ev.data, o: o.data, m: m.data, n: n.data, ch: ch.data, qu, objects,
   });
 }
+const QUOTA_SNAPSHOT_SQL = `
+  select u.user_id::text as user_id, u.day::text as day, u.question_count
+  from public.question_usage u
+  order by 1, 2`;
 
 // このスクリプトが upload を試みたパスのうち、実際に残っているものだけ消す
 async function removeProbeObjects() {
@@ -240,6 +269,15 @@ async function writeTest(role, op, run, expect = "denied, data unchanged") {
   const r = await attempt(run);
   const same = await checkUnchanged();
   record(role, op, expect, describe(r), isDenied(r) && same, same ? "" : "DATA CHANGED (rebuild with seed.mjs)");
+}
+
+// 権限が無いはずの操作：0 件ではなく、エラーで止まり、データも変わっていなければ PASS
+// （question_usage は権限そのものが無いので、行が無くても 0 件ではなくエラーになるはず）
+async function deniedErrorTest(role, op, run) {
+  const r = await attempt(run);
+  const same = await checkUnchanged();
+  record(role, op, "denied (error), data unchanged", describe(r), !!r.error && same,
+    same ? "" : "DATA CHANGED (rebuild with seed.mjs)");
 }
 
 // ---------- 準備 ----------
@@ -407,7 +445,15 @@ async function runAnon() {
   for (const fn of TRIGGER_RPC) {
     await writeTest(role, `rpc ${fn}`, () => anon.rpc(fn), "denied (error), data unchanged");
   }
+
+  // 質問の回数（0008）：anon は関数も表も使えない
+  await deniedErrorTest(role, `[quota] rpc ${QUOTA_RPC}`, () => anon.rpc(QUOTA_RPC));
+  await deniedErrorTest(role, "[quota] insert question_usage", () =>
+    anon.from("question_usage").insert({ user_id: ids.a, day: utcToday(), question_count: 1 }).select());
 }
+
+// UTC の今日（YYYY-MM-DD）。0008 の (now() at time zone 'utc')::date と同じ日
+const utcToday = () => new Date().toISOString().slice(0, 10);
 
 // ---------- 2・3. 会社A / 会社B ----------
 async function runTenant(t, c) {
@@ -734,6 +780,16 @@ async function runTenant(t, c) {
   for (const fn of TRIGGER_RPC) {
     await writeTest(role, `rpc ${fn}`, () => c.rpc(fn), "denied (error), data unchanged");
   }
+
+  // --- 質問の回数（0008）：自分の行でも、表に直接は書けない（回数を戻せない）
+  const self = ids[t.key];
+  // 値は check 制約（>= 1）を満たすものにする。止まる理由が権限だけになるように
+  await deniedErrorTest(role, "[quota] insert own question_usage row", () =>
+    c.from("question_usage").insert({ user_id: self, day: utcToday(), question_count: 1 }).select());
+  await deniedErrorTest(role, "[quota] update own question_usage (count = 1)", () =>
+    c.from("question_usage").update({ question_count: 1 }).eq("user_id", self).select());
+  await deniedErrorTest(role, "[quota] delete own question_usage", () =>
+    c.from("question_usage").delete().eq("user_id", self).select());
 }
 
 // ---------- 4. 管理者（対照） ----------
@@ -860,28 +916,178 @@ async function runPaywallAndCascade() {
   }
 }
 
-// ---------- match_project_chunks の EXECUTE（ローカルの Postgres で has_function_privilege） ----------
-// service_role で呼ぶと RLS を通らず全社の行が返るので、EXECUTE は authenticated だけ
-const RAG_RPC_EXECUTE_SQL = `
+// ---------- 質問の回数制限（0008） ----------
+// 回数の行は、テストの前（main）と、ここの最初と finally で、seed ユーザーの分を消す。
+// 「呼んだ人が数えられる」「同時に呼んでもちょうど上限まで」「上限の後は止まる」は PostgREST 経由で、
+// 「uid が null なら例外」「昨日の分は今日に効かない」は rollback で終わるトランザクションで確かめる
+const QUOTA_ROWS_SQL = `
+  select u.user_id::text as user_id, u.day::text as day, u.question_count,
+         ((now() at time zone 'utc')::date)::text as utc_today
+  from public.question_usage u
+  where u.user_id = any($1::uuid[])
+  order by 2`;
+
+async function runQuestionQuota() {
+  const role = "service";
+  const owner = await signIn(`client-a${DOMAIN}`);
+  const staff = await signIn(`client-a-staff${DOMAIN}`);
+  const otherOrg = await signIn(`client-b${DOMAIN}`);
+  const call = (c) => attempt(() => c.rpc(QUOTA_RPC));
+  const one = (r) => (!r.error && Array.isArray(r.data) && r.data.length === 1 ? r.data[0] : null);
+  const show = (r) => {
+    const x = one(r);
+    return x ? `allowed=${x.allowed}, remaining=${x.remaining}` : describe(r);
+  };
+  const rowsOf = (userId) => queryLocalDb(QUOTA_ROWS_SQL, [[userId]]);
+  const full = DAILY_QUESTION_LIMIT;
+
+  try {
+    await deleteSeedQuotaRows();
+
+    // 1 回目：受け付けて、残りは上限 - 1
+    let r = await call(owner);
+    let x = one(r);
+    record("client-a", `[quota] rpc ${QUOTA_RPC} (1st call)`, `allowed=true, remaining=${full - 1}`, show(r),
+      x?.allowed === true && x?.remaining === full - 1);
+
+    // 行は本人・UTC の今日・1 回
+    let rows = await rowsOf(ids.a);
+    record(role, "[quota] client-a's question_usage after 1st call", "1 row: today (UTC), count 1",
+      rows.map((y) => `${y.day === y.utc_today ? "today" : y.day}: ${y.question_count}`).join(", ") || "(none)",
+      rows.length === 1 && rows[0].day === rows[0].utc_today && rows[0].day === utcToday() &&
+        rows[0].question_count === 1);
+
+    // 人ごとに数える（同じ会社のスタッフも、別の会社のオーナーも、client-a の分に影響されない）
+    for (const [label, c] of [["client-a-staff", staff], ["client-b", otherOrg]]) {
+      r = await call(c);
+      x = one(r);
+      record(label, `[quota] rpc ${QUOTA_RPC} (own 1st call, counted per user)`,
+        `allowed=true, remaining=${full - 1}`, show(r), x?.allowed === true && x?.remaining === full - 1);
+    }
+
+    // 同時に呼ぶ：行を消してから 25 回を一度に。ちょうど上限の回数だけ通る
+    await deleteSeedQuotaRows();
+    const burst = await Promise.all(Array.from({ length: CONCURRENT_QUOTA_CALLS }, () => call(owner)));
+    const outs = burst.map(one);
+    const errors = outs.filter((y) => y === null).length;
+    const allowed = outs.filter((y) => y?.allowed === true);
+    const denied = outs.filter((y) => y?.allowed === false);
+    record("client-a", `[quota] ${CONCURRENT_QUOTA_CALLS} concurrent calls: allowed / denied`,
+      `${full} allowed, ${CONCURRENT_QUOTA_CALLS - full} denied (remaining=0), 0 errors`,
+      `${allowed.length} allowed, ${denied.length} denied, ${errors} errors`,
+      errors === 0 && allowed.length === full && denied.length === CONCURRENT_QUOTA_CALLS - full &&
+        denied.every((y) => y.remaining === 0));
+    const remainings = allowed.map((y) => y.remaining).sort((a, b) => a - b);
+    const expectedRemainings = Array.from({ length: full }, (_, i) => i);
+    record("client-a", `[quota] ${CONCURRENT_QUOTA_CALLS} concurrent calls: remaining values`,
+      `0..${full - 1}, each once`, remainings.length ? `${remainings.join(",")}` : "(none)",
+      remainings.length === full && remainings.every((v, i) => v === expectedRemainings[i]));
+    rows = await rowsOf(ids.a);
+    record(role, `[quota] client-a's count after ${CONCURRENT_QUOTA_CALLS} concurrent calls`, `1 row, count ${full}`,
+      rows.map((y) => `${y.day}: ${y.question_count}`).join(", ") || "(none)",
+      rows.length === 1 && rows[0].question_count === full);
+
+    // 上限の後：止まり、回数は増えない
+    r = await call(owner);
+    x = one(r);
+    record("client-a", `[quota] rpc ${QUOTA_RPC} (call ${full + 1}+)`, "allowed=false, remaining=0", show(r),
+      x?.allowed === false && x?.remaining === 0);
+    rows = await rowsOf(ids.a);
+    record(role, "[quota] client-a's count after the limit", `still ${full}`,
+      rows.map((y) => `${y.day}: ${y.question_count}`).join(", ") || "(none)",
+      rows.length === 1 && rows[0].question_count === full);
+
+    // uid が null（JWT の sub が無い）なら例外。authenticated のまま claims を入れずに呼ぶ
+    const noUid = await inRolledBackTransaction(async (db) => {
+      await db.query("set local role authenticated");
+      try {
+        await db.query("select * from public.consume_question_quota()");
+        return { threw: false };
+      } catch (e) {
+        return { threw: true, code: e.code, message: e.message };
+      }
+    });
+    record(role, `[quota] ${QUOTA_RPC} without a user id (rolled back)`, "error 42501: not authenticated",
+      noUid.threw ? `error ${noUid.code}: ${String(noUid.message).slice(0, 70)}` : "no error",
+      noUid.threw && noUid.code === "42501" && /not authenticated/.test(noUid.message));
+
+    // 日付の境目：昨日（UTC）が上限でも、今日は 1 回目として通る。
+    // client-a の今日の行（上限）はトランザクションの中で消し、最後に rollback で元に戻る
+    const boundary = await inRolledBackTransaction(async (db) => {
+      await db.query("delete from public.question_usage where user_id = $1", [ids.a]);
+      await db.query(
+        `insert into public.question_usage (user_id, day, question_count)
+         values ($1, (now() at time zone 'utc')::date - 1, $2)`, [ids.a, full]);
+      await db.query("set local role authenticated");
+      await db.query("select set_config('request.jwt.claims', $1, true)",
+        [JSON.stringify({ sub: ids.a, role: "authenticated" })]);
+      const res = (await db.query("select allowed, remaining from public.consume_question_quota()")).rows;
+      await db.query("reset role");
+      const left = (await db.query(
+        `select u.day = (now() at time zone 'utc')::date as is_today, u.question_count
+         from public.question_usage u where u.user_id = $1 order by u.day`, [ids.a])).rows;
+      return { res, left };
+    });
+    const bx = boundary.res[0];
+    record(role, `[quota] ${QUOTA_RPC} when yesterday (UTC) is at the limit (rolled back)`,
+      `allowed=true, remaining=${full - 1}; yesterday ${full}, today 1`,
+      `${bx ? `allowed=${bx.allowed}, remaining=${bx.remaining}` : "no row"}; ` +
+        boundary.left.map((y) => `${y.is_today ? "today" : "yesterday"} ${y.question_count}`).join(", "),
+      boundary.res.length === 1 && bx.allowed === true && bx.remaining === full - 1 &&
+        boundary.left.length === 2 &&
+        boundary.left[0].is_today === false && boundary.left[0].question_count === full &&
+        boundary.left[1].is_today === true && boundary.left[1].question_count === 1);
+
+    // rollback で元に戻ったこと（今日の上限の行だけ。昨日の行は残っていない）
+    rows = await rowsOf(ids.a);
+    record(role, "[quota] rolled-back transactions left no changes", `1 row: today (UTC), count ${full}`,
+      rows.map((y) => `${y.day === y.utc_today ? "today" : y.day}: ${y.question_count}`).join(", ") || "(none)",
+      rows.length === 1 && rows[0].day === rows[0].utc_today && rows[0].question_count === full);
+  } catch (e) {
+    record(role, "[quota] setup or checks", "no exception", `exception: ${e.message}`, false);
+  } finally {
+    // 途中で失敗しても、seed ユーザーの回数の行は必ず消す
+    const res = await attempt(async () => {
+      await deleteSeedQuotaRows();
+      const left = await queryLocalDb(QUOTA_ROWS_SQL, [seedUserIds()]);
+      return { data: left, error: null };
+    });
+    record(role, "[quota] seed users' question_usage rows removed", "0 rows left",
+      res.error ? errText(res.error) : `${res.data.length} row(s) left`,
+      !res.error && res.data.length === 0);
+  }
+}
+
+// ---------- 関数の EXECUTE（ローカルの Postgres で has_function_privilege） ----------
+// match_project_chunks：service_role で呼ぶと RLS を通らず全社の行が返るので、authenticated だけ
+// consume_question_quota：auth.uid() の無い呼び出しでは使わないので、authenticated だけ
+const FUNCTION_EXECUTE_SQL = `
   select r.role,
          has_function_privilege(r.role::name, $1::text, 'EXECUTE') as can_execute
   from (values ('anon'), ('authenticated'), ('service_role')) as r(role)
   order by 1`;
 
-async function runRagFunctionPrivileges() {
-  let rows;
-  try {
-    rows = await queryLocalDb(RAG_RPC_EXECUTE_SQL, [RAG_RPC_SIGNATURE]);
-  } catch (e) {
-    record("grants:function", `query EXECUTE on ${RAG_RPC} (local Postgres)`, "query succeeds",
-      `error: ${String(e.message).slice(0, 70)}`, false);
-    return;
+async function runFunctionPrivileges() {
+  for (const fn of FUNCTION_EXECUTE_CHECKS) {
+    let rows;
+    try {
+      rows = await queryLocalDb(FUNCTION_EXECUTE_SQL, [fn.signature]);
+    } catch (e) {
+      record("grants:function", `query EXECUTE on ${fn.name} (local Postgres)`, "query succeeds",
+        `error: ${String(e.message).slice(0, 70)}`, false);
+      continue;
+    }
+    for (const [roleName, expected] of Object.entries(fn.expected)) {
+      const row = rows.find((x) => x.role === roleName);
+      record("grants:function", `EXECUTE on ${fn.name} for ${roleName}`, String(expected),
+        row ? String(row.can_execute) : "missing", row?.can_execute === expected);
+    }
   }
-  for (const [roleName, expected] of Object.entries(EXPECTED_RAG_RPC_EXECUTE)) {
-    const row = rows.find((x) => x.role === roleName);
-    record("grants:function", `EXECUTE on ${RAG_RPC} for ${roleName}`, String(expected),
-      row ? String(row.can_execute) : "missing", row?.can_execute === expected);
-  }
+}
+
+// service_role の RPC：EXECUTE が無いので、呼べない（回数も増えない）
+async function runQuotaServiceRoleCall() {
+  await deniedErrorTest("service", `[quota] rpc ${QUOTA_RPC} with service_role key`, () => admin.rpc(QUOTA_RPC));
 }
 
 // ---------- 列の読み取り（SELECT）の確認 ----------
@@ -937,16 +1143,56 @@ const GRANTS_SQL = `
   where c.table_schema = 'public'
   order by 1, 2, 3`;
 
+// ローカルの Postgres へのクライアント（127.0.0.1 以外なら、loadLocalDbConfig で終了する）
+function newLocalDbClient() {
+  const db = loadLocalDbConfig();
+  if (!secrets.includes(db.password)) secrets.push(db.password);
+  return new pg.Client({ ...db, connectionTimeoutMillis: 5000, application_name: "verify-rls" });
+}
+
 // ローカルの Postgres に読み取り専用でつなぎ、SELECT を 1 つ流して行を返す
 async function queryLocalDb(sql, params = []) {
-  const db = loadLocalDbConfig(); // 127.0.0.1 以外なら、ここで終了する
-  secrets.push(db.password);
-  const client = new pg.Client({ ...db, connectionTimeoutMillis: 5000, application_name: "verify-rls" });
+  const client = newLocalDbClient();
   try {
     await client.connect();
     await client.query("set default_transaction_read_only = on"); // 読むだけ
     return (await client.query(sql, params)).rows;
   } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+// ---- 書き込みもできる接続：用途は次の 2 つだけ（ほかの目的には使わない）----
+
+// seed ユーザー（admin・client-a・client-a-staff・client-b）の ID
+function seedUserIds() {
+  const list = [ids.admin, ...TENANTS.map((t) => ids[t.key])];
+  if (list.some((id) => !id)) throw new Error("seed user ids are not loaded");
+  return list;
+}
+
+// 1. question_usage の、seed ユーザーの行を消す（消した行数を返す）
+async function deleteSeedQuotaRows() {
+  const client = newLocalDbClient();
+  try {
+    await client.connect();
+    const r = await client.query(
+      "delete from public.question_usage where user_id = any($1::uuid[])", [seedUserIds()]);
+    return r.rowCount;
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+// 2. rollback で終わるトランザクションの中で fn(client) を動かす（成功しても失敗しても必ず rollback）
+async function inRolledBackTransaction(fn) {
+  const client = newLocalDbClient();
+  try {
+    await client.connect();
+    await client.query("begin");
+    return await fn(client);
+  } finally {
+    await client.query("rollback").catch(() => {});
     await client.end().catch(() => {});
   }
 }
@@ -1063,6 +1309,39 @@ async function runServiceRolePrivileges() {
       missing.length ? `missing (app needs it): ${missing.join(", ")}` : "",
     ].filter(Boolean).join(" | ");
     record("grants:service_role", `table privileges: ${table} (of ${TABLE_PRIVILEGES.length} checked)`,
+      listText(expected), diffText || `match (${actual.length} privileges)`, !diffText);
+  }
+}
+
+// 4. question_usage の anon・authenticated の表の権限（8 種類とも無いこと）
+//    列の確認は SELECT だけなので、INSERT・UPDATE・DELETE なども表全体で確かめる
+const ROLE_TABLE_PRIVILEGES_SQL = `
+  select r.role,
+         p.privilege,
+         has_table_privilege(r.role::name, $1::text, p.privilege) as granted
+  from unnest($2::text[]) as r(role)
+  cross join unnest($3::text[]) as p(privilege)
+  order by 1, 2`;
+
+async function runQuotaTablePrivileges() {
+  const roles = Object.keys(EXPECTED_QUOTA_TABLE_PRIVILEGES);
+  let rows;
+  try {
+    rows = await queryLocalDb(ROLE_TABLE_PRIVILEGES_SQL, ["public.question_usage", roles, TABLE_PRIVILEGES]);
+  } catch (e) {
+    record("grants", "query question_usage table privileges (local Postgres)", "query succeeds",
+      `error: ${String(e.message).slice(0, 70)}`, false);
+    return;
+  }
+  for (const roleName of roles) {
+    const expected = EXPECTED_QUOTA_TABLE_PRIVILEGES[roleName];
+    const actual = rows.filter((r) => r.role === roleName && r.granted).map((r) => r.privilege);
+    const { extra, missing } = diffColumns(expected, actual);
+    const diffText = [
+      extra.length ? `extra (should be revoked): ${extra.join(", ")}` : "",
+      missing.length ? `missing: ${missing.join(", ")}` : "",
+    ].filter(Boolean).join(" | ");
+    record(`grants:${roleName}`, `table privileges: question_usage (of ${TABLE_PRIVILEGES.length} checked)`,
       listText(expected), diffText || `match (${actual.length} privileges)`, !diffText);
   }
 }
@@ -1202,6 +1481,10 @@ async function main() {
     return;
   }
 
+  // 前の実行やアプリの手動確認で残った、seed ユーザーの質問の回数を消してから基準を取る
+  const staleQuotaRows = await deleteSeedQuotaRows();
+  if (staleQuotaRows) console.log(`removed ${staleQuotaRows} stale question_usage row(s) of seed users`);
+
   baseline = await takeSnapshot();
   const initial = baseline;
 
@@ -1212,9 +1495,12 @@ async function main() {
   }
   await runAdmin();
   await runPaywallAndCascade();
+  await runQuotaServiceRoleCall();
+  await runQuestionQuota();
   await runColumnChecks({ expected: EXPECTED_READABLE_COLUMNS, control: null });
   await runServiceRolePrivileges();
-  await runRagFunctionPrivileges();
+  await runQuotaTablePrivileges();
+  await runFunctionPrivileges();
   await runRpcList();
   await runCleanupCheck(initial);
 

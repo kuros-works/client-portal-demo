@@ -3,7 +3,7 @@
 import { useActionState, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { MAX_QUESTION_LENGTH } from "@/lib/ask";
+import { DAILY_QUESTION_LIMIT, MAX_QUESTION_LENGTH } from "@/lib/ask";
 
 import { askQuestion, type AskFormState } from "./actions";
 
@@ -15,6 +15,7 @@ const ERROR_MESSAGES: Partial<Record<AskFormState["status"], string>> = {
   not_found: "We couldn't find this project.",
   no_sources:
     "There's no information about this project yet, so I can't answer.",
+  daily_limit: `You've reached today's limit of ${DAILY_QUESTION_LIMIT} questions. It resets at 00:00 UTC.`,
   rate_limited:
     "Too many requests right now. Please wait a minute and try again.",
   unavailable: "We couldn't answer right now. Please try again later.",
