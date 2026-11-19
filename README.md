@@ -29,7 +29,7 @@ To try the payment flow with a demo login, use the Stripe test card `4242 4242 4
 - **Passwordless sign-in** with email magic links. Only invited users can sign in; public sign-up is disabled.
 - **Client view:** clients belong to a company (organization) as its owner or staff. They see only their company's projects, each project's status (In progress / In review / Delivered), and its files. Only the owner can pay; staff can view.
 - **Per-project payments:** an admin can set an amount on a project, and the client pays it with Stripe Checkout. Files stay locked until the project is paid.
-- **Email notifications** (via Resend): the client is emailed when an admin changes a project's status, and the admin is emailed when a payment completes. A failed email never fails the status update or the webhook.
+- **Email notifications** (via Resend): when an admin changes a project's status, every member of the client's company gets their own email, and the admin is emailed when a payment completes. A failed email never fails the status update or the webhook.
 - **Ask about this project (RAG):** clients can ask questions about a project in plain English. Claude answers using only the project note the admin wrote, shows the source (`Project note`), and says it doesn't know when the note doesn't cover the question. Limited to 20 questions per person per day.
 - **Admin dashboard:** create projects, set amounts, update status, invite clients, and upload, download, or delete files.
 

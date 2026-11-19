@@ -194,9 +194,10 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
     4. `ANTHROPIC_API_KEY` を不正な値で起動 → "We couldn't answer right now..."、ログは "answer failed: failed 401" だけで鍵は出ない
   - 後片付け：question_usage の行を削除 → `db reset` → seed → verify-rls 422 PASS / 0 FAIL
 - あとで直すこと：管理画面から保存したメモの本文（project_notes.body）に `\r\n` が残る（ブラウザのフォームが改行を `\r\n` で送るため。貼った 2,241 文字が保存後 2,274 文字になった）。chunk 分け（`splitIntoChunks`）では `\n` にそろえているので、chunk と答えには影響なし
-- 手順8（本番に 0007 → 0008 を当てる）は 2026-11-19 に完了。本番で確かめること（結果はまだ記録していない）：
-  - Vercel で `maxDuration = 60`（`projects/[id]/page.tsx`）が効くか
-  - 本番（Vercel）のログに、質問・資料・答え・鍵が出ていないか（エラーの種類だけのはず）
+- 手順8（本番に 0007 → 0008 を当てる）は 2026-11-19 に完了。本番での確認の結果：
+  - 本番の Vercel Runtime Logs（2026-11-19 16:36〜17:35、メモ保存 1 回と質問 2 回を含む）は 0 件。質問・資料・答え・鍵は出ていない
+  - 答えは数秒で返り、`maxDuration = 60`（`projects/[id]/page.tsx`）の上限にはかからなかった（60 秒の上限そのものが効くかは未確認）
+  - Voyage の API キー `client-portal-demo-prod` の LAST USED が 11/19/2026 になった
 - RLS の検証は `scripts/local-seed/`（ローカルの Supabase だけ）。seed は A社（owner・staff）と B社（owner）、案件 6・ファイル 7・project_notes 6・project_chunks 13（埋め込みは偽物の 1024 次元・`dummy-1024`）。`verify-rls.mjs` は 422 checks（0008 で 38 増えた。全体のうち列の確認 55・service_role の表の権限 9・関数の EXECUTE 6。内訳は `scripts/local-seed/README.md`）。陽性対照（`--positive-control`）は 55 checks
   - question_usage は service_role から読めないので、verify-rls はローカルの pg 接続で読む。書き込みもできる接続は「seed ユーザーの回数の行の削除」と「rollback で終わるトランザクション」の 2 つだけに使う。テストの前・回数のテストの最初と finally で seed ユーザーの行を消す
   - RAG の陽性対照は `scripts/local-seed/positive-control/`（ローカル専用・127.0.0.1:54322 だけ）。project_chunks の「client select own」を A（`using (true)`）にすると 32 FAIL、B（支払いの条件を外す）にすると 25 FAIL。`restore.sql` で戻すと qual が元と文字まで同じになり、全部 PASS に戻る（件数は 0007 の時点で測ったもの）。手順は `scripts/local-seed/README.md`
