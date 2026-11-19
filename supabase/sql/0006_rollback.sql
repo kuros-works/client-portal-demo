@@ -16,6 +16,11 @@
 --     戻した後に作る案件の client_id は null になる（null 可なので問題ない）
 --   - この後さらに 0005_rollback.sql を流す場合、client_id が null の案件があるとそこで止まる。
 --     先に client_id を手で埋める
+--   - 本番の stripe_events の service_role には、もともと UPDATE・DELETE が無かった
+--     （0006 の本番の [PRE] 43 が false だった理由）。本番で rollback するときは、
+--     stripe_events に UPDATE・DELETE を grant し直さないこと。
+--     下の「1.」の `grant update, delete on public.stripe_events to service_role;` の 1 行を
+--     消してから流す（その場合、戻した後の [PRE] 43 は、0006 を当てる前の本番と同じく false になる）
 --
 -- ■ このファイルがしないこと
 --   - supabase_migrations.schema_migrations（CLI の履歴）には触らない。

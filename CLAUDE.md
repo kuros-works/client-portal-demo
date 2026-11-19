@@ -140,6 +140,7 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
   - `signInWithOtp` は `shouldCreateUser: false` で呼ぶ
   - お客様の招待はサーバー側で `service_role` を使って行う。招待は2種類：「新しい会社を作ってオーナーとして招待（会社名を入力）」と「既存の会社にスタッフとして招待」。途中で失敗したら、作った会社とユーザーを消して戻す（会社に入っていないユーザーを残さない）
 - 案件の作成では、管理者はお客様ではなく会社を選ぶ。オーナーのいない会社には作らない
+- 本番の migration は SQL Editor で当てる（当てる前と後に `supabase/sql/` の verify を流す）。CLI（`db push`・`migration repair`）は本番に向けて使わない。そのため本番の `supabase_migrations.schema_migrations` には 0005 以降の行が無い
 - 最初の管理者は、Supabase の SQL Editor で手動で `profiles.role` を `admin` に変更する（本番なので実行前に確認を取る）
 - Stripe の Webhook では、案件を `stripe_session_id` ではなく Checkout Session の `metadata.project_id` で特定する
 - Webhook の受け口は `src/app/api/stripe/webhook/route.ts`（ログインなしで届くので、`src/proxy.ts` の matcher から除外している）
@@ -163,7 +164,8 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 - 会社単位（organizations / organization_members、owner / staff）への切り替え：0005 は 2026-11-16 に本番に適用済み・PR #9 マージ済み
 - projects.client_id の削除：
   - PR #10（client_id を書かないコード）は 2026-11-18 にマージ・本番で確認済み
-  - 0006（client_id の削除・service_role の権限の締め直し）はローカルで確認済み（`0006_verify.sql` の PRE / POST・rollback → 再適用）。本番はこれから。当てる前と後に `supabase/sql/0006_verify.sql` を流す
+  - 0006（client_id の削除・service_role の権限の締め直し）はローカルで確認済み（`0006_verify.sql` の PRE / POST・rollback → 再適用）
+  - 0006 は 2026-11-18 05:30 に本番に適用済み（SQL Editor）。PRE は 43 の 1 行だけ false（本番の stripe_events の service_role には、もともと UPDATE・DELETE が無かったため）。POST はすべて true、件数・指紋も PRE と同じ
 - RAG 用の DB（0007）：
   - ローカルで確認済み（`0007_verify.sql` の PRE / POST・rollback → 再適用・verify-rls 384 PASS・陽性対照 A / B）
   - 本番にはまだ当てていない。手順8で当てる（0008 と同じ朝。**0007 → 0008 の順**）。当てる前と後に `supabase/sql/0007_verify.sql` を流す
