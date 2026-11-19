@@ -15,7 +15,12 @@ import { formatFileSize } from "@/lib/project-files";
 import { createClient } from "@/lib/supabase/server";
 import { cn } from "@/lib/utils";
 
+import { AskForm } from "./ask-form";
 import { PayButton } from "./pay-button";
+
+// 質問の Server Action（Voyage → Claude の 2 回の外部呼び出し）に時間がかかるので、
+// このページの Server Action の上限を 60 秒にする
+export const maxDuration = 60;
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -172,6 +177,13 @@ async function ProjectDetail({
               ))}
             </ul>
           )}
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <h2 className="text-base font-medium">Ask about this project</h2>
+        <div className="rounded-lg border bg-card">
+          <AskForm projectId={project.id} />
         </div>
       </section>
     </>

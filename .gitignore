@@ -42,3 +42,6 @@ next-env.d.ts
 
 # local RLS verify reports
 /scripts/local-seed/reports/
+
+# Supabase Studio の SQL スニペット（ローカルの Studio が保存する）
+supabase/snippets/
