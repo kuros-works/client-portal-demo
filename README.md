@@ -27,7 +27,7 @@ To try the payment flow with a demo login, use the Stripe test card `4242 4242 4
 ## Features
 
 - **Passwordless sign-in** with email magic links. Only invited users can sign in; public sign-up is disabled.
-- **Client view:** clients see only their own projects, each project's status (In progress / In review / Delivered), and its files.
+- **Client view:** clients belong to a company (organization) as its owner or staff. They see only their company's projects, each project's status (In progress / In review / Delivered), and its files. Only the owner can pay; staff can view.
 - **Per-project payments:** an admin can set an amount on a project, and the client pays it with Stripe Checkout. Files stay locked until the project is paid.
 - **Email notifications** (via Resend): the client is emailed when an admin changes a project's status, and the admin is emailed when a payment completes. A failed email never fails the status update or the webhook.
 - **Ask about this project (RAG):** clients can ask questions about a project in plain English. Claude answers using only the project note the admin wrote, shows the source (`Project note`), and says it doesn't know when the note doesn't cover the question. Limited to 20 questions per person per day.
@@ -97,7 +97,7 @@ Browser ──► Next.js on Vercel (App Router, Server Actions, route handlers)
 
 This is a focused demo, so some things are left out on purpose:
 
-- No notification emails.
+- No notification emails beyond the two described above (status changes and completed payments).
 - No large files (uploads are limited to 4 MB).
 - No subscriptions, installments, or in-app refunds. Payments are one invoice per project, in USD.
 - No custom design system or CMS.
@@ -105,7 +105,7 @@ This is a focused demo, so some things are left out on purpose:
 
 ## Security design
 
-- **Row Level Security (RLS)** on every table. Admins have full access; clients can only read their own projects. Clients can read a project's files only when the project has no amount or is paid.
+- **Row Level Security (RLS)** on every table. Admins have full access; clients can only read their own company's projects (owners and staff see the same data). Clients can read a project's files only when the project has no amount or is paid.
 - **Writes are admin-only,** with one exception: the Stripe webhook (service role) is the only writer of payment columns. Column-level grants stop even admins from writing them.
 - **Server-side role checks.** Every admin page and Server Action verifies the user's role in the database before reading or writing data.
 - **Private storage.** Files are stored in a private Supabase Storage bucket and are never publicly accessible.
@@ -116,7 +116,7 @@ This is a focused demo, so some things are left out on purpose:
 
 ## Testing
 
-Access control was tested in production by opening each other's project URLs and file download URLs directly, from three directions: signed out, Client A, and Client B. All 10 checks passed.
+Before the switch to company-based access (organizations), access control was tested in production by opening each other's project URLs and file download URLs directly, from three directions: signed out, Client A, and Client B. All 10 checks passed. The current company-based rules are covered by the local automated checks below.
 
 Also verified:
 
@@ -157,8 +157,8 @@ The lesson: AI-written RLS can run without errors and still be wrong, so I test 
 
 ## Where to look
 
-- RLS policies and table definitions: `supabase/migrations/` (`0001_init.sql`, `0002_fix_storage_client_policy.sql`, and `0003_project_payments.sql` for payments)
-- Checkout session creation: `src/app/projects/[id]/actions.ts`
+- RLS policies and table definitions: `supabase/migrations/` (`0001` to `0008`: initial schema, Storage policy fix, payments, tightened grants, company-based access, removal of `projects.client_id`, RAG, and the daily question limit)
+- Checkout session creation: `src/app/(app)/projects/[id]/actions.ts`
 - Stripe webhook: `src/app/api/stripe/webhook/route.ts`
 - File download handling: `src/app/files/[id]/download/route.ts`
 - RAG tables, search function, and RLS: `supabase/migrations/0007_rag.sql`
