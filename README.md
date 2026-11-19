@@ -8,7 +8,11 @@ A secure, invite-only portal where clients can track the status of their project
 
 ### Ask about this project (AI answers from the project note)
 
-<!-- Upload the new video here on GitHub (drag and drop into the editor). -->
+
+
+https://github.com/user-attachments/assets/fb0b8db8-9a26-4c3b-a41b-03dc5f105f3f
+
+
 
 ### Client portal overview
 
