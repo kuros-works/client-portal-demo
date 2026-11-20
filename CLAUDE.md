@@ -202,4 +202,7 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
   - question_usage は service_role から読めないので、verify-rls はローカルの pg 接続で読む。書き込みもできる接続は「seed ユーザーの回数の行の削除」と「rollback で終わるトランザクション」の 2 つだけに使う。テストの前・回数のテストの最初と finally で seed ユーザーの行を消す
   - RAG の陽性対照は `scripts/local-seed/positive-control/`（ローカル専用・127.0.0.1:54322 だけ）。project_chunks の「client select own」を A（`using (true)`）にすると 32 FAIL、B（支払いの条件を外す）にすると 25 FAIL。`restore.sql` で戻すと qual が元と文字まで同じになり、全部 PASS に戻る（件数は 0007 の時点で測ったもの）。手順は `scripts/local-seed/README.md`
   - 回数制限の陽性対照 C は同じフォルダの `break-c.sql`（上限の where を外す）・`restore-c.sql`・`prosrc-c.sql`。6 FAIL / 416 PASS → 戻して 422 PASS
+- CI（`.github/workflows/verify-rls.yml`・PR #14）：main への PR ごとに、GitHub Actions が手元と同じローカルの Supabase を立ち上げ、seed と verify-rls（422 項目）を流す
+  - verify-rls は main の必須チェック（ルールセット）。FAIL があるとマージできない。main へは直接 push できないので、ブランチと PR で入れる
+  - 陽性対照：projects をわざと authenticated 全員に見えるようにした PR（#15）は PASS 410 / FAIL 12 で止まり、マージできないことを確認した。マージせずに閉じ、ブランチも削除済み
 - 開発モードで `Date.now()` の Blocking Route 警告が残っているが、`pnpm build` は成功する

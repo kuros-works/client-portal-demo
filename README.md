@@ -1,5 +1,7 @@
 # Client Portal
 
+[![verify-rls](https://github.com/kuros-works/client-portal-demo/actions/workflows/verify-rls.yml/badge.svg)](https://github.com/kuros-works/client-portal-demo/actions/workflows/verify-rls.yml)
+
 A secure, invite-only portal where clients can track the status of their projects and download deliverables. Admins manage projects, invite clients, and share files from a single dashboard.
 
 **Live demo:** https://client-portal-demo-chi.vercel.app
@@ -138,6 +140,12 @@ Also verified:
   - searching with the exact vector of another company's chunk returns none of that company's rows
   - 25 concurrent questions from one user are accepted exactly 20 times
   - anonymous users and the service role can't call the search or quota functions
+
+**Continuous integration:**
+
+- On every pull request to `main`, GitHub Actions starts the same local Supabase used in development, seeds it, and runs `verify-rls` (422 checks).
+- `verify-rls` is a required check on `main`, so a pull request with any FAIL can't be merged.
+- **Positive control:** a pull request that deliberately made every project visible to all signed-in users failed with 410 PASS / 12 FAIL and could not be merged (PR #15, closed without merging).
 
 ## Building with AI, reviewed by a human
 
