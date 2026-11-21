@@ -7,12 +7,14 @@ import { PaymentBadge } from "@/components/payment-badge";
 import { ProjectStatusBadge } from "@/components/project-status-badge";
 import { requireAdmin } from "@/lib/auth";
 import { dateFormatter, dateTimeFormatter } from "@/lib/format";
+import { ingestStatusLabel } from "@/lib/ingest-status";
 import { formatFileSize } from "@/lib/project-files";
 import { createClient } from "@/lib/supabase/server";
 import { cn } from "@/lib/utils";
 
 import { AmountForm } from "./amount-form";
 import { FileDeleteForm } from "./file-delete-form";
+import { FileReingestForm } from "./file-reingest-form";
 import { FileUploadForm } from "./file-upload-form";
 import { NoteForm } from "./note-form";
 import { OwnerInviteForm, StaffInviteForm } from "./invite-form";
@@ -43,7 +45,7 @@ async function AdminContent() {
     supabase
       .from("projects")
       .select(
-        "id, name, status, amount, payment_status, created_at, organizations(name), project_notes(body), project_files(id, file_name, size, uploaded_at)",
+        "id, name, status, amount, payment_status, created_at, organizations(name), project_notes(body), project_files(id, file_name, size, uploaded_at, project_file_ingests(ingest_status, ingest_error))",
       )
       .order("created_at", { ascending: false })
       .order("uploaded_at", {
@@ -158,42 +160,62 @@ async function AdminContent() {
                 </p>
               ) : (
                 <ul className="flex flex-col divide-y border-t">
-                  {project.project_files.map((file) => (
-                    <li
-                      key={file.id}
-                      className="flex items-center gap-3 p-4"
-                    >
-                      <FileText
-                        className="size-5 shrink-0 text-muted-foreground"
-                        aria-hidden="true"
-                      />
-                      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                        <p className="break-all text-sm font-medium">
-                          {file.file_name}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {formatFileSize(file.size)}
-                          {" · "}
-                          {dateTimeFormatter.format(new Date(file.uploaded_at))}
-                        </p>
-                      </div>
-                      <div className="flex shrink-0 items-start gap-2">
-                        {/* Link だと先読みで署名付き URL が作られうるので、普通の a にする */}
-                        <a
-                          href={`/files/${file.id}/download`}
-                          className={cn(
-                            buttonVariants({ variant: "outline", size: "sm" }),
-                          )}
-                        >
-                          Download
-                        </a>
-                        <FileDeleteForm
-                          fileId={file.id}
-                          fileName={file.file_name}
+                  {project.project_files.map((file) => {
+                    // 1 ファイル 1 行（file_id が主キー）。行が無ければ Pending
+                    const ingest = one(file.project_file_ingests);
+                    const ingestLabel = ingestStatusLabel(ingest);
+                    const ingestFailed = ingest?.ingest_status === "failed";
+                    return (
+                      <li
+                        key={file.id}
+                        className="flex items-center gap-3 p-4"
+                      >
+                        <FileText
+                          className="size-5 shrink-0 text-muted-foreground"
+                          aria-hidden="true"
                         />
-                      </div>
-                    </li>
-                  ))}
+                        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                          <p className="break-all text-sm font-medium">
+                            {file.file_name}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatFileSize(file.size)}
+                            {" · "}
+                            {dateTimeFormatter.format(new Date(file.uploaded_at))}
+                          </p>
+                          <p
+                            className={cn(
+                              "text-xs",
+                              ingestFailed
+                                ? "text-destructive"
+                                : "text-muted-foreground",
+                            )}
+                          >
+                            Search: {ingestLabel}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-start gap-2">
+                          {/* Link だと先読みで署名付き URL が作られうるので、普通の a にする */}
+                          <a
+                            href={`/files/${file.id}/download`}
+                            className={cn(
+                              buttonVariants({ variant: "outline", size: "sm" }),
+                            )}
+                          >
+                            Download
+                          </a>
+                          {/* PDF ではないファイルは、取り込み直しても同じ結果なので出さない */}
+                          {ingest?.ingest_error !== "not_pdf" && (
+                            <FileReingestForm fileId={file.id} />
+                          )}
+                          <FileDeleteForm
+                            fileId={file.id}
+                            fileName={file.file_name}
+                          />
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </li>

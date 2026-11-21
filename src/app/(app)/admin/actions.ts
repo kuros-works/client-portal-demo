@@ -575,12 +575,15 @@ export async function deleteProjectFile(
     .from(PROJECT_FILES_BUCKET)
     .remove([file.storage_path]);
 
-  revalidatePath("/admin");
-
   if (removeError) {
     console.error("remove file failed:", fileId, removeError.name);
+    // ここでは revalidatePath を呼ばない。呼ぶと一覧からこのファイルが消え、
+    // 削除フォームごと外れて警告が見えなくなるため（一覧は再読み込みで新しくなる）
     return { status: "storage_failed" };
   }
+
+  revalidatePath("/admin");
+
   // 0 件は、実体がもともと無かった場合など。行は消えたので削除済みとして扱う
   if (!removed || removed.length === 0) {
     console.error("remove file affected 0 objects:", fileId);

@@ -4,6 +4,7 @@ import { useActionState, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ingestResultLine } from "@/lib/ingest-status";
 import { MAX_FILE_SIZE } from "@/lib/project-files";
 
 import { uploadProjectFile, type UploadFormState } from "./actions";
@@ -62,7 +63,12 @@ export function FileUploadForm({ projectId }: { projectId: string }) {
         </p>
       )}
       {status === "uploaded" && (
-        <p className="text-sm">File uploaded.</p>
+        // 取り込みが失敗してもアップロードは成功のまま。取り込みの結果は同じ行に続けて出す
+        <p className="text-sm">
+          {state.ingest
+            ? `Uploaded. ${ingestResultLine(state.ingest)}`
+            : "File uploaded."}
+        </p>
       )}
     </form>
   );

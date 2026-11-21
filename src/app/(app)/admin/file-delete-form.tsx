@@ -49,6 +49,14 @@ export function FileDeleteForm({
           We couldn&apos;t delete the file. You don&apos;t have permission.
         </p>
       )}
+      {/* 行は消えたが Storage の実体が残っている（お客様が直接読める可能性がある）。
+          警告を見せるため、この場合だけ Action は一覧を更新しない（再読み込みで一覧から消える） */}
+      {state.status === "storage_failed" && (
+        <p role="alert" className="text-sm text-destructive">
+          File removed from the list, but the stored copy could not be deleted.
+          Remove it in Supabase Storage. Reload the page to update the list.
+        </p>
+      )}
       {state.status === "error" && (
         <p className="text-sm text-destructive">
           We couldn&apos;t delete the file. Please try again later.
