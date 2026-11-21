@@ -19,6 +19,10 @@ import { OwnerInviteForm, StaffInviteForm } from "./invite-form";
 import { ProjectForm } from "./project-form";
 import { StatusForm } from "./status-form";
 
+// この画面の Server Action（アップロード後の PDF の取り込み：ダウンロード・解析・埋め込みの数回の外部呼び出し）用。
+// Server Action の上限はページ単位で決まる。Vercel のプランで 60 秒が効くかは本番で確かめる
+export const maxDuration = 60;
+
 // 多対一の結合結果。型の上では配列にもなりうるので、どちらでも 1 件目を取り出す
 function one<T>(value: T | T[] | null | undefined): T | undefined {
   return (Array.isArray(value) ? value[0] : value) ?? undefined;
