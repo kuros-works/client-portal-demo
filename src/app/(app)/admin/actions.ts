@@ -7,6 +7,7 @@ import { requireAdmin } from "@/lib/auth";
 import { MAX_NOTE_LENGTH, splitIntoChunks } from "@/lib/chunk";
 import { sendStatusChangedEmail } from "@/lib/email";
 import { EmbeddingError, embedDocuments } from "@/lib/embeddings";
+import { ingestProjectFile, type IngestResult } from "@/lib/ingest-file";
 import { parseDollarsToCents } from "@/lib/project-amount";
 import { MAX_FILE_SIZE, PROJECT_FILES_BUCKET } from "@/lib/project-files";
 import { isProjectStatus } from "@/lib/project-status";
@@ -411,6 +412,8 @@ export async function updateProjectAmount(
 
 export type UploadFormState = {
   status: "idle" | "uploaded" | "invalid" | "empty" | "too_large" | "error";
+  // アップロードの後の取り込みの結果（表示はステップ4）。取り込みが失敗してもアップロードは成功のまま
+  ingest?: IngestResult;
 };
 
 export async function uploadProjectFile(
@@ -472,8 +475,38 @@ export async function uploadProjectFile(
     return { status: "error" };
   }
 
+  // 検索用に取り込む（PDF 以外は skipped・not_pdf になる）。
+  // 失敗してもアップロードは取り消さない（状態は project_file_ingests に残り、あとで取り込み直せる）
+  const ingest = await ingestProjectFile(fileId);
+
   revalidatePath("/admin");
-  return { status: "uploaded" };
+  return { status: "uploaded", ingest };
+}
+
+export type ReingestFormState = {
+  status: "idle" | "invalid" | "not_found" | "done";
+  ingest?: IngestResult;
+};
+
+// 取り込み直す（失敗した・見送ったファイル、またはモデルを変えたときの作り直し）
+export async function reingestProjectFile(
+  _prevState: ReingestFormState,
+  formData: FormData,
+): Promise<ReingestFormState> {
+  await requireAdmin();
+
+  const fileId = String(formData.get("file_id") ?? "").toLowerCase();
+  if (!UUID_PATTERN.test(fileId)) {
+    return { status: "invalid" };
+  }
+
+  const ingest = await ingestProjectFile(fileId);
+  if (ingest.status === "not_found") {
+    return { status: "not_found" };
+  }
+
+  revalidatePath("/admin");
+  return { status: "done", ingest };
 }
 
 export type DeleteFileFormState = {
@@ -483,6 +516,8 @@ export type DeleteFileFormState = {
     | "invalid"
     | "not_found"
     | "not_deleted"
+    // 行（と chunk・取り込みの状態）は消えたが、Storage の実体を消せなかった
+    | "storage_failed"
     | "error";
 };
 
@@ -513,21 +548,8 @@ export async function deleteProjectFile(
     return { status: "not_found" };
   }
 
-  // ① Storage を先に消す。失敗したら行は残し、もう一度押せばやり直せるようにする
-  const { data: removed, error: removeError } = await supabase.storage
-    .from(PROJECT_FILES_BUCKET)
-    .remove([file.storage_path]);
-
-  if (removeError) {
-    console.error("remove file failed:", removeError.name);
-    return { status: "error" };
-  }
-  // 0 件は、前回 ① だけ成功して ② が失敗した場合など。削除済みとして ② に進む
-  if (!removed || removed.length === 0) {
-    console.error("remove file affected 0 objects:", file.storage_path);
-  }
-
-  // ② 行を消す
+  // ① 行を先に消す。chunk（project_chunks）と取り込みの状態（project_file_ingests）は cascade で消える。
+  //    先に行を消すのは、Storage だけ消えて chunk が検索に残る、ということを起こさないため
   const { data: deleted, error: deleteError } = await supabase
     .from("project_files")
     .delete()
@@ -545,7 +567,28 @@ export async function deleteProjectFile(
     return { status: "not_deleted" };
   }
 
+  // ② Storage の実体を消す。失敗しても行はもう無いので、その旨を返す。
+  //    注意：Storage のポリシーは project_files の行を見ないので、実体が残ると、
+  //    パス（storage_path）を知っている同じ会社のお客様は Storage から直接読める。
+  //    storage_failed のときは、管理者が Storage の実体を手で消す
+  const { data: removed, error: removeError } = await supabase.storage
+    .from(PROJECT_FILES_BUCKET)
+    .remove([file.storage_path]);
+
+  if (removeError) {
+    console.error("remove file failed:", fileId, removeError.name);
+    // ここでは revalidatePath を呼ばない。呼ぶと一覧からこのファイルが消え、
+    // 削除フォームごと外れて警告が見えなくなるため（一覧は再読み込みで新しくなる）
+    return { status: "storage_failed" };
+  }
+
   revalidatePath("/admin");
+
+  // 0 件は、実体がもともと無かった場合など。行は消えたので削除済みとして扱う
+  if (!removed || removed.length === 0) {
+    console.error("remove file affected 0 objects:", fileId);
+  }
+
   return { status: "deleted" };
 }
 

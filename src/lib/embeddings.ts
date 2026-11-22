@@ -28,7 +28,7 @@ function fail(kind: EmbeddingErrorKind): never {
 
 type InputType = "document" | "query";
 
-// すべての文章を 1 回のリクエストでまとめて送る（無料枠は 3 回/分）。
+// 渡された文章を 1 回のリクエストで送る（無料枠は 3 回/分）。分けて送るのは embedDocuments の役目。
 // 失敗したら EmbeddingError を投げる。429 は "rate_limited"、それ以外は "failed"。
 async function requestEmbeddings(
   texts: string[],
@@ -105,11 +105,35 @@ async function requestEmbeddings(
   return { embeddings, model };
 }
 
+// 1 回のリクエストで送る chunk の数（PDF は 50,000 文字まで＝chunk は 70 前後なので、2 回ほどになる）
+export const EMBEDDING_BATCH_SIZE = 64;
+
 // メモ・ファイルの chunk 用（保存時）。
+// EMBEDDING_BATCH_SIZE 件ずつ、順番に送る（同時には送らない。無料枠の回数の上限があるため）。
+// どこかで失敗したら、そこで EmbeddingError を投げる（途中までの結果は返さない）。
 export async function embedDocuments(
   texts: string[],
 ): Promise<{ embeddings: number[][]; model: string }> {
-  return requestEmbeddings(texts, "document");
+  if (texts.length === 0) {
+    return fail("failed");
+  }
+
+  const embeddings: number[][] = [];
+  let model: string | undefined;
+  for (let start = 0; start < texts.length; start += EMBEDDING_BATCH_SIZE) {
+    const batch = await requestEmbeddings(
+      texts.slice(start, start + EMBEDDING_BATCH_SIZE),
+      "document",
+    );
+    // 途中で環境変数が変わることは無いはずだが、モデルが混ざった結果は返さない
+    if (model !== undefined && batch.model !== model) {
+      return fail("failed");
+    }
+    model = batch.model;
+    embeddings.push(...batch.embeddings);
+  }
+
+  return { embeddings, model: model as string };
 }
 
 // 質問用（検索時）。1 件だけ送る。保存時と同じ EMBEDDING_MODEL・同じ 1024 次元で作る。

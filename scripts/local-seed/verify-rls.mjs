@@ -27,6 +27,7 @@ const EXPECTED_READABLE_COLUMNS = deepFreeze({
     project_notes: [],
     project_chunks: [],
     question_usage: [],
+    project_file_ingests: [],
   },
   authenticated: {
     profiles: ["id", "email", "name", "role", "created_at"],
@@ -46,13 +47,21 @@ const EXPECTED_READABLE_COLUMNS = deepFreeze({
     ],
     // 回数の表（0008）は読めない。読み書きは consume_question_quota（security definer）からだけ
     question_usage: [],
+    // 取り込みの状態（0009）。管理者が本人のセッションで読むので、列の権限は 4 列とも付いている。
+    // お客様に見えないのは RLS（「admin all」だけ）で守る
+    project_file_ingests: ["file_id", "ingest_status", "ingest_error", "ingested_at"],
   },
 });
 const PUBLIC_TABLES = Object.keys(EXPECTED_READABLE_COLUMNS.authenticated);
+// 列の権限はあるが、行は管理者にしか見えない表（お客様の select は「エラーなし・0 行」が正しい）
+const ADMIN_ONLY_ROW_TABLES = deepFreeze(["project_file_ingests"]);
+const INGEST_TABLE = "project_file_ingests";
+const INGEST_COLUMNS = EXPECTED_READABLE_COLUMNS.authenticated[INGEST_TABLE];
 
-// service_role の表の権限（0008 の後）。service_role は RLS を通らないので、これがそのまま「できること」になる
+// service_role の表の権限（0009 の後）。service_role は RLS を通らないので、これがそのまま「できること」になる
 // TRUNCATE・REFERENCES・TRIGGER・MAINTAIN はどの表にも無い。stripe_events は select と insert だけの台帳
-// project_notes・project_chunks は seed 用に select / insert / update / delete。question_usage は何も無い
+// project_notes・project_chunks・project_file_ingests は seed 用に select / insert / update / delete。
+// question_usage は何も無い
 const TABLE_PRIVILEGES = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN"];
 const EXPECTED_SERVICE_ROLE_PRIVILEGES = deepFreeze({
   profiles: ["SELECT", "INSERT", "UPDATE", "DELETE"],
@@ -64,6 +73,7 @@ const EXPECTED_SERVICE_ROLE_PRIVILEGES = deepFreeze({
   project_notes: ["SELECT", "INSERT", "UPDATE", "DELETE"],
   project_chunks: ["SELECT", "INSERT", "UPDATE", "DELETE"],
   question_usage: [],
+  project_file_ingests: ["SELECT", "INSERT", "UPDATE", "DELETE"],
 });
 
 // ---------- RAG（0007） ----------
@@ -233,11 +243,16 @@ async function takeSnapshot() {
   must(n.error, "snapshot project_notes");
   const ch = await admin.from("project_chunks").select("*").order("id");
   must(ch.error, "snapshot project_chunks");
+  // 取り込みの状態（0009）。表が無い DB（0009 の前）でも全体を止めず、エラーの種類を中身として持つ
+  // （表が無いことは、列の権限・service_role の権限・[ingest] のテストが FAIL で知らせる）
+  const fi = await admin.from(INGEST_TABLE).select("*").order("file_id");
+  const fiData = fi.error ? { error: fi.error.code ?? "unknown" } : fi.data;
   // question_usage は service_role から読めないので、ローカルの Postgres で読む（読むだけ）
   const qu = await queryLocalDb(QUOTA_SNAPSHOT_SQL);
   const objects = await listAllObjects();
   return JSON.stringify({
-    p: p.data, f: f.data, pr: pr.data, ev: ev.data, o: o.data, m: m.data, n: n.data, ch: ch.data, qu, objects,
+    p: p.data, f: f.data, pr: pr.data, ev: ev.data, o: o.data, m: m.data, n: n.data, ch: ch.data,
+    fi: fiData, qu, objects,
   });
 }
 const QUOTA_SNAPSHOT_SQL = `
@@ -407,6 +422,8 @@ async function runAnon() {
       project_id: some.id, source_type: "note", source_label: "verify-probe", chunk_index: 99,
       content: "verify-probe", embedding: fakeEmbedding(WRITE_PROBE_SLOT), embedding_model: EMBEDDING_MODEL,
     }).select());
+  await writeTest(role, `[ingest] insert ${INGEST_TABLE}`, () =>
+    anon.from(INGEST_TABLE).insert({ file_id: file.id, ingest_status: "ready" }).select());
 
   const list = await attempt(() => anon.storage.from(BUCKET).list("", { limit: 1000 }));
   record(role, "storage list (root)", "denied (error or empty)", describe(list), isDenied(list));
@@ -798,12 +815,16 @@ async function runAdmin() {
   const c = await signIn(`admin${DOMAIN}`);
   const total = async (table) => {
     const r = await admin.from(table).select("*", { count: "exact", head: true });
-    must(r.error, `count ${table}`);
-    return r.count;
+    return r.error ? null : r.count;
   };
   for (const table of ["projects", "project_files", "profiles", "organizations", "organization_members",
-    "project_notes", "project_chunks"]) {
+    "project_notes", "project_chunks", INGEST_TABLE]) {
     const expected = await total(table);
+    // service_role で数えられない（表が無いなど）ときは、比べられないので FAIL にして次へ
+    if (expected === null) {
+      record(role, `count ${table}`, "service_role count available", "service_role count failed", false);
+      continue;
+    }
     const r = await attempt(() => c.from(table).select("*", { count: "exact", head: true }));
     record(role, `count ${table}`, `${expected} (all rows)`, r.error ? describe(r) : `count=${r.count}`,
       !r.error && r.count === expected);
@@ -893,7 +914,16 @@ async function runPaywallAndCascade() {
     const rb = await see(otherOrg);
     record("client-b", "[#7] select company A's probe file chunk (paid)", "0 rows", describe(rb), isDenied(rb));
 
-    // #8：管理者（authenticated・admin ポリシー）がファイルの行を消すと、chunk も連鎖で消える
+    // #8 の準備：テスト用のファイルに、取り込みの状態の行を管理者本人のセッションで作る（0009）。
+    // 失敗しても #8 の chunk の確認は続ける（must を使わず、結果として記録する）
+    const ing = await attempt(() => adminUser.from(INGEST_TABLE)
+      .upsert({ file_id: fileId, ingest_status: "ready", ingested_at: new Date().toISOString() },
+        { onConflict: "file_id" })
+      .select("file_id"));
+    record("admin", `[#8] upsert probe ${INGEST_TABLE} row`, "1 row", describe(ing),
+      !ing.error && ing.data?.length === 1);
+
+    // #8：管理者（authenticated・admin ポリシー）がファイルの行を消すと、chunk も状態の行も連鎖で消える
     const d = await attempt(() => adminUser.from("project_files").delete().eq("id", fileId).select("id"));
     record("admin", "[#8] delete probe project_files row", "1 row deleted", describe(d),
       !d.error && d.data?.length === 1);
@@ -901,6 +931,11 @@ async function runPaywallAndCascade() {
     must(left.error, "count probe chunk after file delete");
     record("service", "[#8] probe file chunk after its file is deleted", "0 rows (cascaded)",
       `count=${left.count}`, left.count === 0);
+    const ingLeft = await attempt(() => admin.from(INGEST_TABLE)
+      .select("file_id", { count: "exact", head: true }).eq("file_id", fileId));
+    record("service", `[#8] probe ${INGEST_TABLE} row after its file is deleted`, "0 rows (cascaded)",
+      ingLeft.error ? errText(ingLeft.error) : `count=${ingLeft.count}`,
+      !ing.error && !ingLeft.error && ingLeft.count === 0);
   } catch (e) {
     record("service", "[#7/#8] probe setup or checks", "no exception", `exception: ${e.message}`, false);
   } finally {
@@ -913,6 +948,115 @@ async function runPaywallAndCascade() {
         del.error ? errText(del.error) : chk.error ? errText(chk.error) : `count=${chk.count}`,
         !del.error && !chk.error && chk.count === 0);
     }
+  }
+}
+
+// ---------- 取り込みの状態（0009） ----------
+// seed のファイルには状態の行が無い前提。A社の「お客様にも見えるファイル」1 つに、管理者本人のセッションで
+// upsert（ready）して、お客様からは見えない・書けないこと、check 制約が効くことを確かめる。
+// テストで作った行は、finally で service_role で必ず消す（#7・#8 と同じやり方）
+const CHECK_VIOLATION = "23514";
+
+async function runFileIngest() {
+  const adminUser = await signIn(`admin${DOMAIN}`);
+  const owner = await signIn(`client-a${DOMAIN}`);
+  const staff = await signIn(`client-a-staff${DOMAIN}`);
+  const otherOrg = await signIn(`client-b${DOMAIN}`);
+  const companyA = tenantOf(TENANTS[0]);
+  const target = companyA.ownVisibleFiles[0]; // 状態の行を作るファイル
+  // お客様の insert を試す、行の無いファイル（同じ A社）
+  const spare = [...companyA.ownVisibleFiles, ...companyA.ownHiddenFiles].find((f) => f.id !== target?.id);
+  const rowsOk = (r, n) => !r.error && Array.isArray(r.data) && r.data.length === n;
+
+  if (!target || !spare) {
+    record("service", "[ingest] seed files for the test", "2 files of company A",
+      `target ${target ? "found" : "missing"}, spare ${spare ? "found" : "missing"}`, false);
+    return;
+  }
+  const touched = [target.id, spare.id];
+
+  try {
+    // 前提：seed のファイルには状態の行が無い
+    const pre = await attempt(() => admin.from(INGEST_TABLE)
+      .select("file_id", { count: "exact", head: true }).in("file_id", files.map((f) => f.id)));
+    record("service", `[ingest] ${INGEST_TABLE} rows of seed files (before)`, "0 rows",
+      pre.error ? errText(pre.error) : `count=${pre.count}`, !pre.error && pre.count === 0);
+
+    // 管理者：upsert（ready）→ 1 行。返ってきた列が 4 列そろっているかも見る
+    const up = await attempt(() => adminUser.from(INGEST_TABLE)
+      .upsert({ file_id: target.id, ingest_status: "ready", ingest_error: null, ingested_at: new Date().toISOString() },
+        { onConflict: "file_id" })
+      .select("*"));
+    const upCols = rowsOk(up, 1) ? Object.keys(up.data[0]) : [];
+    record("admin", `[ingest] upsert ${INGEST_TABLE} (ready)`, `1 row: ${listText(INGEST_COLUMNS)}`,
+      up.error ? describe(up) : `${up.data.length} row(s): ${listText(upCols)}`,
+      rowsOk(up, 1) && up.data[0].ingest_status === "ready" && sameSet(upCols, INGEST_COLUMNS));
+    const back = await attempt(() => adminUser.from(INGEST_TABLE)
+      .select("file_id,ingest_status").eq("file_id", target.id));
+    record("admin", `[ingest] select ${INGEST_TABLE} (after upsert)`, "1 row (ready)", describe(back),
+      rowsOk(back, 1) && back.data[0].ingest_status === "ready");
+
+    // ここからの書き込みテストは、この行がある状態を基準にする
+    baseline = await takeSnapshot();
+
+    // 同じ会社のお客様（オーナー・スタッフ）：ファイルの行は見えるが、状態の行は 0 行・書けない
+    for (const [label, c] of [["client-a", owner], ["client-a-staff", staff]]) {
+      const fileRow = await attempt(() => c.from("project_files").select("id").eq("id", target.id));
+      record(label, "[ingest] select the target project_files row (control)", "1 row", describe(fileRow),
+        rowsOk(fileRow, 1));
+      let r = await attempt(() => c.from(INGEST_TABLE).select("*").eq("file_id", target.id));
+      record(label, `[ingest] select ${INGEST_TABLE} (own company's file)`, "0 rows, no error", describe(r),
+        rowsOk(r, 0));
+      r = await attempt(() => c.from(INGEST_TABLE).select("*"));
+      record(label, `[ingest] select * ${INGEST_TABLE}`, "0 rows, no error", describe(r), rowsOk(r, 0));
+
+      await writeTest(label, `[ingest] insert ${INGEST_TABLE} (own company's file)`, () =>
+        c.from(INGEST_TABLE).insert({ file_id: spare.id, ingest_status: "ready" }).select());
+      await writeTest(label, `[ingest] upsert ${INGEST_TABLE} (own company's file)`, () =>
+        c.from(INGEST_TABLE).upsert({ file_id: target.id, ingest_status: "failed", ingest_error: "failed" },
+          { onConflict: "file_id" }).select());
+      await writeTest(label, `[ingest] update ${INGEST_TABLE} (own company's file)`, () =>
+        c.from(INGEST_TABLE).update({ ingest_status: "failed" }).eq("file_id", target.id).select());
+      await writeTest(label, `[ingest] delete ${INGEST_TABLE} (own company's file)`, () =>
+        c.from(INGEST_TABLE).delete().eq("file_id", target.id).select());
+    }
+
+    // 別の会社のお客様：0 行・書けない
+    let rb = await attempt(() => otherOrg.from(INGEST_TABLE).select("*").eq("file_id", target.id));
+    record("client-b", `[ingest] select ${INGEST_TABLE} (company A's file)`, "0 rows, no error", describe(rb),
+      rowsOk(rb, 0));
+    rb = await attempt(() => otherOrg.from(INGEST_TABLE).select("*"));
+    record("client-b", `[ingest] select * ${INGEST_TABLE}`, "0 rows, no error", describe(rb), rowsOk(rb, 0));
+    await writeTest("client-b", `[ingest] insert ${INGEST_TABLE} (company A's file)`, () =>
+      otherOrg.from(INGEST_TABLE).insert({ file_id: spare.id, ingest_status: "ready" }).select());
+    await writeTest("client-b", `[ingest] update ${INGEST_TABLE} (company A's file)`, () =>
+      otherOrg.from(INGEST_TABLE).update({ ingest_status: "failed" }).eq("file_id", target.id).select());
+
+    // check 制約：決めた種類以外は、管理者でも入れられない
+    for (const [column, value] of [["ingest_error", "boom"], ["ingest_status", "boom"]]) {
+      const r = await attempt(() => adminUser.from(INGEST_TABLE)
+        .update({ [column]: value }).eq("file_id", target.id).select());
+      const same = await checkUnchanged();
+      record("admin", `[ingest] update ${column} = '${value}'`,
+        `error ${CHECK_VIOLATION} (check constraint), data unchanged`, describe(r),
+        r.error?.code === CHECK_VIOLATION && same, same ? "" : "DATA CHANGED (rebuild with seed.mjs)");
+    }
+    // 対照：決めた種類なら入る（制約がすべてを拒否しているのではないこと）
+    const ok = await attempt(() => adminUser.from(INGEST_TABLE)
+      .update({ ingest_status: "failed", ingest_error: "too_many_pages" }).eq("file_id", target.id).select());
+    record("admin", "[ingest] update ingest_error = 'too_many_pages' (control)", "1 row updated", describe(ok),
+      rowsOk(ok, 1) && ok.data[0].ingest_error === "too_many_pages");
+  } catch (e) {
+    record("service", "[ingest] setup or checks", "no exception", `exception: ${e.message}`, false);
+  } finally {
+    // 途中で失敗しても、テストで作った状態の行は必ず消す
+    const del = await attempt(() => admin.from(INGEST_TABLE).delete().in("file_id", touched));
+    const chk = await attempt(() => admin.from(INGEST_TABLE)
+      .select("file_id", { count: "exact", head: true }).in("file_id", touched));
+    record("service", `[ingest] ${INGEST_TABLE} test rows removed`, "0 rows left",
+      del.error ? errText(del.error) : chk.error ? errText(chk.error) : `count=${chk.count}`,
+      !del.error && !chk.error && chk.count === 0);
+    baseline = await takeSnapshot();
   }
 }
 
@@ -1249,6 +1393,16 @@ async function runColumnReads(ctx) {
       const op = `select * ${table}: returned columns`;
       const r = await attempt(() => c.from(table).select("*"));
 
+      // 行が管理者にしか見えない表（0009）：
+      // お客様は「エラーなし・0 行」で PASS（エラーは表が無い・権限が無いことを示すので FAIL）。
+      // 管理者は seed に行が無いので、ここでは「エラーなし・0 行」だけを見る（列は [ingest] のテストで見る）
+      if (ADMIN_ONLY_ROW_TABLES.includes(table)) {
+        const ok = !r.error && Array.isArray(r.data) && r.data.length === 0;
+        record(role, op, role === "admin" ? "0 rows, no error (seed has no rows)" : "0 rows, no error (RLS)",
+          describe(r), ok);
+        continue;
+      }
+
       // 読めてよい列がないテーブル：エラーか 0 件なら PASS
       if (expected.length === 0) {
         const keys = !r.error && Array.isArray(r.data) ? [...new Set(r.data.flatMap(Object.keys))] : [];
@@ -1495,6 +1649,7 @@ async function main() {
   }
   await runAdmin();
   await runPaywallAndCascade();
+  await runFileIngest();
   await runQuotaServiceRoleCall();
   await runQuestionQuota();
   await runColumnChecks({ expected: EXPECTED_READABLE_COLUMNS, control: null });
