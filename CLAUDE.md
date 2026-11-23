@@ -219,10 +219,10 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
   - お客様の答えの出典には PDF のファイル名が出る。未払いの案件では PDF 由来の chunk は見えない（project_files と同じ条件）
   - 本番で確認済み：1-project-brief.pdf を上げて取り込み、お客様の質問に PDF の内容で答えた
   - 確認・戻し方は `supabase/sql/0009_verify.sql`・`0009_rollback.sql`。戻すときは先にアプリの取り込みのコードを戻す
-- 行の無い Storage の実体をお客様から読めなくする（0010・ブランチ `fix/storage-require-file-row`）：
+- 行の無い Storage の実体をお客様から読めなくする（0010・PR #19 でマージ済み（2026-11-23））：
   - 理由：deleteProjectFile で行を消した後に Storage の削除だけ失敗すると（`storage_failed`）、実体が残り、パスを知っている同じ会社のお客様が直接読めたため
   - verify-rls に `runOrphanObject()`（8 checks）を足した：A社の支払い済み案件のフォルダに行の無い実体を service_role で上げ、owner・staff の download・createSignedUrl・createSignedUrls が拒否され、管理者は download できることを見る。実体は finally で消す
   - ローカルで確認済み（2026-11-23）：`db reset` → seed → verify-rls 467 PASS / 0 FAIL。`0010_verify.sql` の POST → rollback → PRE（すべて合格・件数と指紋も同じ）→ もう一度 rollback すると「0010 is not applied」で止まる。rollback した状態の verify-rls は 461 PASS / 6 FAIL（FAIL は足したお客様のテスト 6 件だけ）→ 当て直して POST 合格 → `db reset` → seed → 467 PASS / 0 FAIL
   - 確認 SQL は like ではなく strpos で式の文字を見る（like の `_` は任意の 1 文字なので、`'%project_files%'` がバケット名 `'project-files'` にも当たる）
-  - 本番には未適用。push・PR もまだ
+  - 本番適用 2026-11-23・PR #19 は 2026-11-23 にマージ済み
 - 開発モードで `Date.now()` の Blocking Route 警告が残っているが、`pnpm build` は成功する
