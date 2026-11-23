@@ -127,7 +127,7 @@ node scripts/local-seed/verify-rls.mjs
 
 期待値は `verify-rls.mjs` の先頭の `EXPECTED_READABLE_COLUMNS`（ロールごと・テーブルごとに読めてよい列）。列が多くても少なくても FAIL。
 
-1. 権限：`.env.seed.local` の `DB_URL` で Postgres に直接つなぎ、`information_schema.columns` の全列に `has_column_privilege`（anon・authenticated、SELECT）を当てる。表全体の権限も数える。public のテーブル・ビューが期待値の 9 つ以外にあっても FAIL。
+1. 権限：`.env.seed.local` の `DB_URL` で Postgres に直接つなぎ、`information_schema.columns` の全列に `has_column_privilege`（anon・authenticated、SELECT）を当てる。表全体の権限も数える。public のテーブル・ビューが期待値の 10 以外にあっても FAIL。
    - 接続先のホストは `127.0.0.1` だけ（`localhost` も不可）。クエリ文字列つきの URL も止める（`guard.mjs` の `loadLocalDbConfig()`）。
    - 接続後は `default_transaction_read_only = on` にして、SELECT だけを送る。
 2. 実際の読み取り：client-a・client-b・admin でログインし、各テーブルを `select *` して、返ってきた列名を比べる。読めてよい列があるテーブルで 1 行も返らなければ FAIL（確認できていないため）。anon は既存の「エラーか 0 件」の確認で見る。

@@ -212,7 +212,7 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 - CI（`.github/workflows/verify-rls.yml`・PR #14）：main への PR ごとに、GitHub Actions が手元と同じローカルの Supabase を立ち上げ、seed と verify-rls（467 項目）を流す
   - verify-rls は main の必須チェック（ルールセット）。FAIL があるとマージできない。main へは直接 push できないので、ブランチと PR で入れる
   - 陽性対照：projects をわざと authenticated 全員に見えるようにした PR（#15）は PASS 410 / FAIL 12 で止まり、マージできないことを確認した。マージせずに閉じ、ブランチも削除済み
-- PDF からの回答（0009・PR #17）：本番適用済み・PR #17 は 2026-11-22 にマージ済み
+- PDF からの回答（0009・PR #17）：0009 の本番適用は 2026-11-22・PR #17 は 2026-11-22 にマージ済み
   - 管理画面でファイルを上げると、続けて `ingestProjectFile`（`src/lib/ingest-file.ts`）が PDF の本文を取り出し（`src/lib/pdf-text.ts`・20 ページ・50,000 文字まで。200 文字未満は no_text）→ 分割 → Voyage で埋め込み → そのファイルの古い chunk を消して入れる → project_file_ingests に upsert する。書き込みは管理者本人のセッションだけ（service_role は使わない）
   - PDF 以外・ページや文字が多すぎる・本文が無いものは skipped、Voyage のレート制限は failed（ingest_error は rate_limited）、それ以外の失敗は failed（failed）。取り込みが失敗してもアップロードは成功のまま
   - 管理画面に取り込みの状態・取り込み直すボタン（`reingestProjectFile`）・アップロードの結果の行・storage_failed の警告を出す
