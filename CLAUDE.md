@@ -46,7 +46,7 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 
 ## テーブル設計
 
-定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正、0003 が案件ごとの請求の準備、0004 が権限の締め直し、0005 が会社単位への切り替え、0006 が projects.client_id の削除と service_role の権限の締め直し、0007 が RAG 用の DB（vector 拡張・project_notes・project_chunks・match_project_chunks）、0008 が質問の回数制限（question_usage・consume_question_quota））。本番に当てる前と後の確認・戻し方は `supabase/sql/`（`0005_verify.sql`・`0005_rollback.sql`・`0006_verify.sql`・`0006_rollback.sql`・`0007_verify.sql`・`0007_rollback.sql`・`0008_verify.sql`・`0008_rollback.sql`）。
+定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正、0003 が案件ごとの請求の準備、0004 が権限の締め直し、0005 が会社単位への切り替え、0006 が projects.client_id の削除と service_role の権限の締め直し、0007 が RAG 用の DB（vector 拡張・project_notes・project_chunks・match_project_chunks）、0008 が質問の回数制限（question_usage・consume_question_quota）、0009 がファイルの取り込みの状態（project_file_ingests・project_chunks の (file_id, project_id) の索引）、0010 が Storage のお客様向けポリシーに「project_files にその storage_path の行がある」条件の追加）。本番に当てる前と後の確認・戻し方は `supabase/sql/`（`0005_verify.sql`・`0005_rollback.sql`・`0006_verify.sql`・`0006_rollback.sql`・`0007_verify.sql`・`0007_rollback.sql`・`0008_verify.sql`・`0008_rollback.sql`・`0009_verify.sql`・`0009_rollback.sql`・`0010_verify.sql`・`0010_rollback.sql`）。
 
 - **profiles**：id、email、name、role、created_at
   - id は auth.users(id) への外部キー（削除時は連動して削除）
@@ -76,7 +76,8 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
   - updated_at は更新時にトリガー（`project_notes_set_updated_at`・関数は projects と同じ `set_updated_at()`）で自動更新する
   - お客様に見せる前提の内容だけを書く（RAG の答えに使うので、書いたことはお客様に見えるのと同じ）
 - **project_chunks**：id、project_id、file_id、source_type、source_label、chunk_index、content、embedding、embedding_model、created_at（0007）
-  - メモ・ファイルを分割して埋め込みを付けた検索用の行。最初の版の取り込みはメモだけ
+  - メモ・ファイルを分割して埋め込みを付けた検索用の行。取り込むのはメモと PDF（PDF は 0009 と PR #17 から）
+  - (file_id, project_id) に索引 `project_chunks_file_id_project_id_idx`（0009。ファイルの行を消したときの cascade と、ファイルごとの chunk の入れ直しで使う）
   - project_id は projects(id) への外部キー（`on delete cascade`）
   - source_type は `note` / `file`。`file` のときだけ file_id が必須（check 制約 `project_chunks_source_file_check`）
   - (file_id, project_id) は project_files (id, project_id) への複合外部キー（`project_chunks_file_fkey`・`on delete cascade`・match simple）。別の案件のファイルを指せない。ファイルの行を消すと chunk も消える
@@ -100,19 +101,25 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
   - 日の区切りは UTC の 0 時（`(now() at time zone 'utc')::date`。日本時間の朝 9 時に戻る）
   - security definer・`search_path = ''`・plpgsql・volatile。持ち主は question_usage と同じ（postgres）。表の持ち主は RLS を通らないので、ポリシーなしでも書ける
   - EXECUTE は authenticated だけ（PUBLIC・anon・service_role から revoke）
+- **project_file_ingests**：file_id（主キー）、ingest_status、ingest_error、ingested_at（0009）
+  - ファイルごとの取り込み（PDF → chunk）の状態。1 ファイル 1 行。file_id は project_files(id) への外部キー（`on delete cascade`：ファイルの行を消すと状態の行も消える）
+  - ingest_status は `pending` / `ready` / `failed` / `skipped`（初期値 `pending`）。ingest_error は null か `no_text` / `too_long` / `too_many_pages` / `not_pdf` / `rate_limited` / `failed` だけ（check 制約。本文や例外のメッセージは入れない）。ingested_at は取り込みが終わった時刻
+  - project_files の列にしないのは、管理者もお客様も同じ authenticated なので、列の権限では「管理者だけ」を表せないため
+  - 行はトリガーで作らず、アプリの取り込み処理（`ingestProjectFile`）が管理者本人のセッションで upsert する。行が無いファイルは pending とみなす。0009 を当てたときに、既存のファイルに pending の行を 1 つずつ作った
+  - RLS は有効・ポリシーは「admin all」だけ（お客様には 0 行）。トリガーは無い
 - **stripe_events**：event_id（主キー）、event_type、session_id、amount_total、currency、payment_status、customer_email、received_at
   - Webhook の二重処理を防ぐため、受け取ったイベントを event_id で記録する
   - RLS は有効・ポリシーなし。service_role は select / insert だけ（update・delete もできない、書き足すだけの台帳。0006 で外した）。anon・authenticated には何も与えない
 - **Storage**：非公開バケット `project-files`（バケットの上限は 1 ファイル 10MB。アプリ側の上限は 4MB）
   - パスは `案件ID/<ファイルID>`（ファイルID は project_files.id と同じ）。元のファイル名は `file_name` 列に保存する
-- **RLS**：9 テーブルと storage.objects で有効。作成・変更・削除・招待は管理者のみ
+- **RLS**：10 テーブルと storage.objects で有効。作成・変更・削除・招待は管理者のみ
   - 各テーブルに「admin all」（管理者は全操作）と、お客様の閲覧用のポリシー（「client select own」など）を置く
-  - お客様が見られる範囲：profiles は自分の行、organizations は自分の会社、organization_members は自分の会社のメンバーの行、projects は自分の会社の案件、project_files は自分の会社の案件のファイル（その案件の amount が null または `paid` のときだけ）、project_notes は自分の会社の案件のメモ（支払いの状態に関係なく）、project_chunks は自分の会社の案件の行（メモ由来はいつでも、ファイル由来は project_files と同じ条件）。question_usage は自分の行も見えない（ポリシーなし。管理者も同じ）。owner と staff で見られる範囲は同じ
-  - Storage は、パスの先頭フォルダが自分の会社の案件ID のファイルだけ読める（0002 で `storage.objects.name` を明示する形に修正済み。0003 で project_files と同じ支払いの条件を追加）
+  - お客様が見られる範囲：profiles は自分の行、organizations は自分の会社、organization_members は自分の会社のメンバーの行、projects は自分の会社の案件、project_files は自分の会社の案件のファイル（その案件の amount が null または `paid` のときだけ）、project_notes は自分の会社の案件のメモ（支払いの状態に関係なく）、project_chunks は自分の会社の案件の行（メモ由来はいつでも、ファイル由来は project_files と同じ条件）。question_usage は自分の行も見えない（ポリシーなし。管理者も同じ）。project_file_ingests はお客様には見えない（管理者だけ）。owner と staff で見られる範囲は同じ
+  - Storage は、パスの先頭フォルダが自分の会社の案件ID のファイルだけ読める（0002 で `storage.objects.name` を明示する形に修正済み。0003 で project_files と同じ支払いの条件を追加。0010 で、同じ storage_path の project_files の行があり、その行の案件がパスの先頭フォルダの案件と同じことも条件に追加。行の無い実体（ファイルの行を消した後に Storage の削除だけ失敗したもの）は、パスを知っていてもお客様からは読めない。管理者のポリシー（`project-files: admin all`）は変えていないので、管理者は読める・消せる）
   - 管理者の判定は `is_admin()`、会社の判定は `is_org_member(org)`・`is_org_owner(org)`（どれも security definer・`search_path = ''`・実行できるのは authenticated のみ）。organization_members のポリシーが自分自身を参照して無限ループにならないよう、判定は必ずこの関数を通す
-  - 権限（0004 で「いったん revoke してから、アプリが使う分だけ grant」に整理。0005・0007・0008 の新しい表も同じ）：authenticated は profiles・organizations・organization_members が select だけ、projects が select と列ごとの insert / update（delete なし）、project_files が select / insert / delete、project_notes が select / insert / update、project_chunks が select / insert / delete（update なし）、question_usage は何も無い。anon には何も与えない
+  - 権限（0004 で「いったん revoke してから、アプリが使う分だけ grant」に整理。0005・0007・0008・0009 の新しい表も同じ）：authenticated は profiles・organizations・organization_members が select だけ、projects が select と列ごとの insert / update（delete なし）、project_files が select / insert / delete、project_notes が select / insert / update、project_chunks が select / insert / delete（update なし）、project_file_ingests が select / insert / update（delete なし。ファイルの行の削除に連動して消える）、question_usage は何も無い。anon には何も与えない
   - project_notes・project_chunks の書き込みは、管理者本人のセッション（authenticated）＋「admin all」ポリシーで行う（この機能では service_role を使わない）
-  - service_role は profiles・projects・project_files・organizations・organization_members・project_notes・project_chunks の select / insert / update / delete（表全体。project_notes・project_chunks は seed 用）、stripe_events は select / insert だけ、question_usage は何も無い（0008）。TRUNCATE・REFERENCES・TRIGGER・MAINTAIN はどの表にも無い（0006・0007・0008 で外した）。RLS を通らない
+  - service_role は profiles・projects・project_files・organizations・organization_members・project_notes・project_chunks・project_file_ingests の select / insert / update / delete（表全体。project_notes・project_chunks・project_file_ingests は seed 用）、stripe_events は select / insert だけ、question_usage は何も無い（0008）。TRUNCATE・REFERENCES・TRIGGER・MAINTAIN はどの表にも無い（0006・0007・0008・0009 で外した）。RLS を通らない
   - projects の列ごとの権限（authenticated）：insert は name、status、organization_id、amount / update は status、amount。payment_status・paid_at・stripe_session_id を書けるのは service_role（Webhook）だけ
   - Supabase の初期設定（default privileges）で、新しいテーブルには anon・authenticated・service_role の 3 つに全部の権限（arwdDxtm）が付く。テーブルを足すときは、0004・0006 と同じく revoke してから必要な分だけ grant する（「守るルール」参照）
   - MAINTAIN は Postgres 17 からの権限で、`information_schema` には出ない。確かめるときは `has_table_privilege` か `pg_class.relacl` を見る
@@ -198,11 +205,24 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
   - 本番の Vercel Runtime Logs（2026-11-19 16:36〜17:35、メモ保存 1 回と質問 2 回を含む）は 0 件。質問・資料・答え・鍵は出ていない
   - 答えは数秒で返り、`maxDuration = 60`（`projects/[id]/page.tsx`）の上限にはかからなかった（60 秒の上限そのものが効くかは未確認）
   - Voyage の API キー `client-portal-demo-prod` の LAST USED が 11/19/2026 になった
-- RLS の検証は `scripts/local-seed/`（ローカルの Supabase だけ）。seed は A社（owner・staff）と B社（owner）、案件 6・ファイル 7・project_notes 6・project_chunks 13（埋め込みは偽物の 1024 次元・`dummy-1024`）。`verify-rls.mjs` は 422 checks（0008 で 38 増えた。全体のうち列の確認 55・service_role の表の権限 9・関数の EXECUTE 6。内訳は `scripts/local-seed/README.md`）。陽性対照（`--positive-control`）は 55 checks
+- RLS の検証は `scripts/local-seed/`（ローカルの Supabase だけ）。seed は A社（owner・staff）と B社（owner）、案件 6・ファイル 7・project_notes 6・project_chunks 13（埋め込みは偽物の 1024 次元・`dummy-1024`）。`verify-rls.mjs` は 467 checks（0008 で 38、0009 で 37、0010 で 8 増えた。0008 の時点の内訳は列の確認 55・service_role の表の権限 9・関数の EXECUTE 6。内訳は `scripts/local-seed/README.md`）。陽性対照（`--positive-control`）は 55 checks
   - question_usage は service_role から読めないので、verify-rls はローカルの pg 接続で読む。書き込みもできる接続は「seed ユーザーの回数の行の削除」と「rollback で終わるトランザクション」の 2 つだけに使う。テストの前・回数のテストの最初と finally で seed ユーザーの行を消す
   - RAG の陽性対照は `scripts/local-seed/positive-control/`（ローカル専用・127.0.0.1:54322 だけ）。project_chunks の「client select own」を A（`using (true)`）にすると 32 FAIL、B（支払いの条件を外す）にすると 25 FAIL。`restore.sql` で戻すと qual が元と文字まで同じになり、全部 PASS に戻る（件数は 0007 の時点で測ったもの）。手順は `scripts/local-seed/README.md`
   - 回数制限の陽性対照 C は同じフォルダの `break-c.sql`（上限の where を外す）・`restore-c.sql`・`prosrc-c.sql`。6 FAIL / 416 PASS → 戻して 422 PASS
-- CI（`.github/workflows/verify-rls.yml`・PR #14）：main への PR ごとに、GitHub Actions が手元と同じローカルの Supabase を立ち上げ、seed と verify-rls（422 項目）を流す
+- CI（`.github/workflows/verify-rls.yml`・PR #14）：main への PR ごとに、GitHub Actions が手元と同じローカルの Supabase を立ち上げ、seed と verify-rls（467 項目）を流す
   - verify-rls は main の必須チェック（ルールセット）。FAIL があるとマージできない。main へは直接 push できないので、ブランチと PR で入れる
   - 陽性対照：projects をわざと authenticated 全員に見えるようにした PR（#15）は PASS 410 / FAIL 12 で止まり、マージできないことを確認した。マージせずに閉じ、ブランチも削除済み
+- PDF からの回答（0009・PR #17）：0009 の本番適用は 2026-11-22・PR #17 は 2026-11-22 にマージ済み
+  - 管理画面でファイルを上げると、続けて `ingestProjectFile`（`src/lib/ingest-file.ts`）が PDF の本文を取り出し（`src/lib/pdf-text.ts`・20 ページ・50,000 文字まで。200 文字未満は no_text）→ 分割 → Voyage で埋め込み → そのファイルの古い chunk を消して入れる → project_file_ingests に upsert する。書き込みは管理者本人のセッションだけ（service_role は使わない）
+  - PDF 以外・ページや文字が多すぎる・本文が無いものは skipped、Voyage のレート制限は failed（ingest_error は rate_limited）、それ以外の失敗は failed（failed）。取り込みが失敗してもアップロードは成功のまま
+  - 管理画面に取り込みの状態・取り込み直すボタン（`reingestProjectFile`）・アップロードの結果の行・storage_failed の警告を出す
+  - お客様の答えの出典には PDF のファイル名が出る。未払いの案件では PDF 由来の chunk は見えない（project_files と同じ条件）
+  - 本番で確認済み：1-project-brief.pdf を上げて取り込み、お客様の質問に PDF の内容で答えた
+  - 確認・戻し方は `supabase/sql/0009_verify.sql`・`0009_rollback.sql`。戻すときは先にアプリの取り込みのコードを戻す
+- 行の無い Storage の実体をお客様から読めなくする（0010・ブランチ `fix/storage-require-file-row`）：
+  - 理由：deleteProjectFile で行を消した後に Storage の削除だけ失敗すると（`storage_failed`）、実体が残り、パスを知っている同じ会社のお客様が直接読めたため
+  - verify-rls に `runOrphanObject()`（8 checks）を足した：A社の支払い済み案件のフォルダに行の無い実体を service_role で上げ、owner・staff の download・createSignedUrl・createSignedUrls が拒否され、管理者は download できることを見る。実体は finally で消す
+  - ローカルで確認済み（2026-11-23）：`db reset` → seed → verify-rls 467 PASS / 0 FAIL。`0010_verify.sql` の POST → rollback → PRE（すべて合格・件数と指紋も同じ）→ もう一度 rollback すると「0010 is not applied」で止まる。rollback した状態の verify-rls は 461 PASS / 6 FAIL（FAIL は足したお客様のテスト 6 件だけ）→ 当て直して POST 合格 → `db reset` → seed → 467 PASS / 0 FAIL
+  - 確認 SQL は like ではなく strpos で式の文字を見る（like の `_` は任意の 1 文字なので、`'%project_files%'` がバケット名 `'project-files'` にも当たる）
+  - 本番には未適用。push・PR もまだ
 - 開発モードで `Date.now()` の Blocking Route 警告が残っているが、`pnpm build` は成功する

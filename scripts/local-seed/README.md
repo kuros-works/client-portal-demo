@@ -84,7 +84,7 @@ node scripts/local-seed/verify-rls.mjs
 - FAIL が出ても、RLS や migrations は直さない。報告だけ。
 - 結果は `scripts/local-seed/reports/verify-rls-latest.md` に保存される（git 無視。キー・パスワード・トークンは書かない）。
 - 終了コードは、FAIL があれば 1。
-- 全部で 422 checks（0008 の前は 384、0007 の前は 279）。
+- 全部で 467 checks（0010 の前は 459、0009 の前は 422、0008 の前は 384、0007 の前は 279）。
 
 ### RAG（0007）の確認
 
@@ -115,21 +115,30 @@ node scripts/local-seed/verify-rls.mjs
   - スナップショットには question_usage の全行も入る（service_role では読めないので、読むだけの pg 接続で読む）
 - 日付は UTC。日本時間の朝 9 時より前に流すと、行の日付は前の日になる
 
+### 行の無い Storage の実体（0010）の確認（8 checks）
+
+- ファイルの行を消した後に Storage の削除だけ失敗した状態をまねる。A社の支払い済みの案件のフォルダに、project_files の行が無い実体（`<案件ID>/verify-orphan-<uuid>`）を service_role で 1 つ上げる
+- お客様（client-a・client-a-staff）：その実体の download・createSignedUrl・createSignedUrls がすべて拒否される（3 件 × 2 人）
+- 管理者：その実体を download できる（1 件）
+- 実体は finally で消し、消えたことを確かめる（1 件）。失敗しても、最後の掃除（probePaths）で消え、既存の bucket file count はそのまま通る
+- 0010_rollback.sql で戻すと、お客様の 6 件だけが FAIL になる（461 PASS / 6 FAIL。2026-11-23 に確認）
+
 ### 列の読み取り（SELECT）の確認
 
 期待値は `verify-rls.mjs` の先頭の `EXPECTED_READABLE_COLUMNS`（ロールごと・テーブルごとに読めてよい列）。列が多くても少なくても FAIL。
 
-1. 権限：`.env.seed.local` の `DB_URL` で Postgres に直接つなぎ、`information_schema.columns` の全列に `has_column_privilege`（anon・authenticated、SELECT）を当てる。表全体の権限も数える。public のテーブル・ビューが期待値の 9 つ以外にあっても FAIL。
+1. 権限：`.env.seed.local` の `DB_URL` で Postgres に直接つなぎ、`information_schema.columns` の全列に `has_column_privilege`（anon・authenticated、SELECT）を当てる。表全体の権限も数える。public のテーブル・ビューが期待値の 10 以外にあっても FAIL。
    - 接続先のホストは `127.0.0.1` だけ（`localhost` も不可）。クエリ文字列つきの URL も止める（`guard.mjs` の `loadLocalDbConfig()`）。
    - 接続後は `default_transaction_read_only = on` にして、SELECT だけを送る。
 2. 実際の読み取り：client-a・client-b・admin でログインし、各テーブルを `select *` して、返ってきた列名を比べる。読めてよい列があるテーブルで 1 行も返らなければ FAIL（確認できていないため）。anon は既存の「エラーか 0 件」の確認で見る。
 
 ### service_role の表の権限の確認
 
-期待値は `verify-rls.mjs` の `EXPECTED_SERVICE_ROLE_PRIVILEGES`（0008 の後の形）。
+期待値は `verify-rls.mjs` の `EXPECTED_SERVICE_ROLE_PRIVILEGES`（0009 の後の形。0010 は表の権限を変えない）。
 
-- 列の確認と同じく `DB_URL` で Postgres に読み取り専用でつなぎ、public の 9 つの表それぞれに `has_table_privilege('service_role', …)` で 8 種類（SELECT・INSERT・UPDATE・DELETE・TRUNCATE・REFERENCES・TRIGGER・MAINTAIN）を当てる。MAINTAIN は `information_schema` に出ないので、この関数で見る。
-- 期待値と完全に一致すれば PASS（7 つの表は SELECT・INSERT・UPDATE・DELETE、stripe_events は SELECT・INSERT だけ、question_usage は何も無い）。1 表で 1 件、合計 9 件。
+- 列の確認と同じく `DB_URL` で Postgres に読み取り専用でつなぎ、public の 10 の表それぞれに `has_table_privilege('service_role', …)` で 8 種類（SELECT・INSERT・UPDATE・DELETE・TRUNCATE・REFERENCES・TRIGGER・MAINTAIN）を当てる。MAINTAIN は `information_schema` に出ないので、この関数で見る。
+- 期待値と完全に一致すれば PASS（8 つの表は SELECT・INSERT・UPDATE・DELETE、stripe_events は SELECT・INSERT だけ、question_usage は何も無い）。1 表で 1 件、合計 10 件。
+  - SELECT・INSERT・UPDATE・DELETE の 8 つ：profiles・projects・project_files・organizations・organization_members・project_notes・project_chunks・project_file_ingests（project_notes・project_chunks・project_file_ingests は seed 用）
 - FAIL のときの表示：
   - `extra (should be revoked)`：外したはずの権限が残っている（0006 が当たっていない、新しい表で revoke を忘れた、など）
   - `missing (app needs it)`：アプリが使う権限が無い（Server Action・Webhook が失敗する）
@@ -207,6 +216,7 @@ node scripts/local-seed/verify-rls.mjs   #    → 422 PASS / FAIL 0 に戻る
 - C（6 FAIL）：同時 25 回の 2 件（25 回とも受け付け・remaining が -5〜19）、25 回の後の回数（25）、21 回目（`allowed=true, remaining=-6`）、上限の後の回数（26）、rollback の後の確認（today: 26）。1 回目・人ごと・uid が null・日付の境目・権限・拒否は PASS のまま
 - 戻した後の本文の md5 は、0008_question_quota.sql の `$$ … $$` の中身と同じ（2026-11-19 に確認：674 文字）
 - 回数の行は finally で消すので、壊している間も最後の data unchanged は identical のまま
+- 上の件数（6 FAIL / 416 PASS・戻して 422 PASS）は 0008 の時点（全 422 件）で測った数。0009・0010 のテストは回数制限に関係しないので、今は PASS だけが 45 件増える見込み（6 FAIL / 461 PASS・戻して 467 PASS。0010 の後には測っていない）
 - 途中で止まったら、必ず `restore-c.sql` を流してから `prosrc-c.sql` と verify-rls で元どおりかを確かめる
 
 ### テストでデータが変わってしまったとき

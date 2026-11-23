@@ -951,6 +951,61 @@ async function runPaywallAndCascade() {
   }
 }
 
+// ---------- 行の無い Storage の実体（0010） ----------
+// ファイルの行を消した後に Storage の削除だけ失敗した状態をまねる。A社の支払い済みの案件のフォルダに、
+// project_files の行が無い実体を service_role で 1 つ上げ、お客様（owner・staff）からは読めず、
+// 管理者は読めることを確かめる。実体は finally で必ず消す（失敗しても probePaths で最後に掃除される）
+async function runOrphanObject() {
+  const companyA = tenantOf(TENANTS[0]);
+  const paid = companyA.paid;
+  if (!paid) {
+    record("service", "[orphan] company A paid project", "found", "missing", false);
+    return;
+  }
+  const path = `${paid.id}/verify-orphan-${randomUUID()}`;
+  probePaths.add(path);
+  let uploaded = false;
+
+  try {
+    const up = await admin.storage.from(BUCKET)
+      .upload(path, Buffer.from("verify-orphan", "utf8"), { contentType: "text/plain" });
+    must(up.error, "upload orphan object");
+    uploaded = true;
+
+    const owner = await signIn(`client-a${DOMAIN}`);
+    const staff = await signIn(`client-a-staff${DOMAIN}`);
+    const adminUser = await signIn(`admin${DOMAIN}`);
+
+    for (const [label, c] of [["client-a", owner], ["client-a-staff", staff]]) {
+      const d = await dl(c, path);
+      record(label, "[orphan] download object without a project_files row (paid project)", "denied (error)",
+        d.error ? errText(d.error) : "downloaded", !!d.error);
+      const s = await sign(c, path);
+      record(label, "[orphan] signed URL for object without a project_files row", "denied (error)",
+        s.error ? errText(s.error) : "created", !!s.error);
+      const b = await attempt(() => c.storage.from(BUCKET).createSignedUrls([path], 60));
+      const signed = b.error ? [] : b.data.filter((x) => !x.error && x.signedUrl);
+      record(label, "[orphan] signed URLs (batch) for object without a project_files row", "0 created",
+        b.error ? describe(b) : `${signed.length} created`, signed.length === 0);
+    }
+
+    const d = await dl(adminUser, path);
+    record("admin", "[orphan] download object without a project_files row", "ok",
+      d.error ? errText(d.error) : "downloaded", !d.error);
+  } catch (e) {
+    record("service", "[orphan] setup or checks", "no exception", `exception: ${e.message}`, false);
+  } finally {
+    if (uploaded) {
+      const rm = await attempt(() => admin.storage.from(BUCKET).remove([path]));
+      const left = await attempt(() => listAllObjects());
+      const still = Array.isArray(left) ? left.some((o) => o.name === path) : null;
+      record("service", "[orphan] object removed", "not in bucket",
+        rm.error ? errText(rm.error) : still === null ? "list failed" : still ? "still in bucket" : "removed",
+        !rm.error && still === false);
+    }
+  }
+}
+
 // ---------- 取り込みの状態（0009） ----------
 // seed のファイルには状態の行が無い前提。A社の「お客様にも見えるファイル」1 つに、管理者本人のセッションで
 // upsert（ready）して、お客様からは見えない・書けないこと、check 制約が効くことを確かめる。
@@ -1649,6 +1704,7 @@ async function main() {
   }
   await runAdmin();
   await runPaywallAndCascade();
+  await runOrphanObject();
   await runFileIngest();
   await runQuotaServiceRoleCall();
   await runQuestionQuota();
