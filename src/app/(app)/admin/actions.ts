@@ -568,8 +568,8 @@ export async function deleteProjectFile(
   }
 
   // ② Storage の実体を消す。失敗しても行はもう無いので、その旨を返す。
-  //    注意：Storage のポリシーは project_files の行を見ないので、実体が残ると、
-  //    パス（storage_path）を知っている同じ会社のお客様は Storage から直接読める。
+  //    Storage のお客様向けポリシーは、同じ storage_path の project_files の行があるときだけ読める
+  //    （0010）ので、実体が残ってもお客様からは読めない。ただし実体はバケットに残るので、
   //    storage_failed のときは、管理者が Storage の実体を手で消す
   const { data: removed, error: removeError } = await supabase.storage
     .from(PROJECT_FILES_BUCKET)
