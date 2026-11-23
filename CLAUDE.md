@@ -46,7 +46,7 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 
 ## テーブル設計
 
-定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正、0003 が案件ごとの請求の準備、0004 が権限の締め直し、0005 が会社単位への切り替え、0006 が projects.client_id の削除と service_role の権限の締め直し、0007 が RAG 用の DB（vector 拡張・project_notes・project_chunks・match_project_chunks）、0008 が質問の回数制限（question_usage・consume_question_quota））。本番に当てる前と後の確認・戻し方は `supabase/sql/`（`0005_verify.sql`・`0005_rollback.sql`・`0006_verify.sql`・`0006_rollback.sql`・`0007_verify.sql`・`0007_rollback.sql`・`0008_verify.sql`・`0008_rollback.sql`）。
+定義は `supabase/migrations/`（0001 が初期設定、0002 が Storage ポリシーの修正、0003 が案件ごとの請求の準備、0004 が権限の締め直し、0005 が会社単位への切り替え、0006 が projects.client_id の削除と service_role の権限の締め直し、0007 が RAG 用の DB（vector 拡張・project_notes・project_chunks・match_project_chunks）、0008 が質問の回数制限（question_usage・consume_question_quota）、0010 が Storage のお客様向けポリシーに「project_files にその storage_path の行がある」条件の追加）。本番に当てる前と後の確認・戻し方は `supabase/sql/`（`0005_verify.sql`・`0005_rollback.sql`・`0006_verify.sql`・`0006_rollback.sql`・`0007_verify.sql`・`0007_rollback.sql`・`0008_verify.sql`・`0008_rollback.sql`・`0010_verify.sql`・`0010_rollback.sql`）。
 
 - **profiles**：id、email、name、role、created_at
   - id は auth.users(id) への外部キー（削除時は連動して削除）
@@ -108,7 +108,7 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
 - **RLS**：9 テーブルと storage.objects で有効。作成・変更・削除・招待は管理者のみ
   - 各テーブルに「admin all」（管理者は全操作）と、お客様の閲覧用のポリシー（「client select own」など）を置く
   - お客様が見られる範囲：profiles は自分の行、organizations は自分の会社、organization_members は自分の会社のメンバーの行、projects は自分の会社の案件、project_files は自分の会社の案件のファイル（その案件の amount が null または `paid` のときだけ）、project_notes は自分の会社の案件のメモ（支払いの状態に関係なく）、project_chunks は自分の会社の案件の行（メモ由来はいつでも、ファイル由来は project_files と同じ条件）。question_usage は自分の行も見えない（ポリシーなし。管理者も同じ）。owner と staff で見られる範囲は同じ
-  - Storage は、パスの先頭フォルダが自分の会社の案件ID のファイルだけ読める（0002 で `storage.objects.name` を明示する形に修正済み。0003 で project_files と同じ支払いの条件を追加）
+  - Storage は、パスの先頭フォルダが自分の会社の案件ID のファイルだけ読める（0002 で `storage.objects.name` を明示する形に修正済み。0003 で project_files と同じ支払いの条件を追加。0010 で、同じ storage_path の project_files の行があり、その行の案件がパスの先頭フォルダの案件と同じことも条件に追加。行の無い実体（ファイルの行を消した後に Storage の削除だけ失敗したもの）は、パスを知っていてもお客様からは読めない。管理者のポリシー（`project-files: admin all`）は変えていないので、管理者は読める・消せる）
   - 管理者の判定は `is_admin()`、会社の判定は `is_org_member(org)`・`is_org_owner(org)`（どれも security definer・`search_path = ''`・実行できるのは authenticated のみ）。organization_members のポリシーが自分自身を参照して無限ループにならないよう、判定は必ずこの関数を通す
   - 権限（0004 で「いったん revoke してから、アプリが使う分だけ grant」に整理。0005・0007・0008 の新しい表も同じ）：authenticated は profiles・organizations・organization_members が select だけ、projects が select と列ごとの insert / update（delete なし）、project_files が select / insert / delete、project_notes が select / insert / update、project_chunks が select / insert / delete（update なし）、question_usage は何も無い。anon には何も与えない
   - project_notes・project_chunks の書き込みは、管理者本人のセッション（authenticated）＋「admin all」ポリシーで行う（この機能では service_role を使わない）
@@ -198,11 +198,17 @@ Stripe は案件ごとの請求（1案件1請求・usd）だけ。月額・分�
   - 本番の Vercel Runtime Logs（2026-11-19 16:36〜17:35、メモ保存 1 回と質問 2 回を含む）は 0 件。質問・資料・答え・鍵は出ていない
   - 答えは数秒で返り、`maxDuration = 60`（`projects/[id]/page.tsx`）の上限にはかからなかった（60 秒の上限そのものが効くかは未確認）
   - Voyage の API キー `client-portal-demo-prod` の LAST USED が 11/19/2026 になった
-- RLS の検証は `scripts/local-seed/`（ローカルの Supabase だけ）。seed は A社（owner・staff）と B社（owner）、案件 6・ファイル 7・project_notes 6・project_chunks 13（埋め込みは偽物の 1024 次元・`dummy-1024`）。`verify-rls.mjs` は 422 checks（0008 で 38 増えた。全体のうち列の確認 55・service_role の表の権限 9・関数の EXECUTE 6。内訳は `scripts/local-seed/README.md`）。陽性対照（`--positive-control`）は 55 checks
+- RLS の検証は `scripts/local-seed/`（ローカルの Supabase だけ）。seed は A社（owner・staff）と B社（owner）、案件 6・ファイル 7・project_notes 6・project_chunks 13（埋め込みは偽物の 1024 次元・`dummy-1024`）。`verify-rls.mjs` は 467 checks（0008 で 38、0009 で 37、0010 で 8 増えた。0008 の時点の内訳は列の確認 55・service_role の表の権限 9・関数の EXECUTE 6。内訳は `scripts/local-seed/README.md`）。陽性対照（`--positive-control`）は 55 checks
   - question_usage は service_role から読めないので、verify-rls はローカルの pg 接続で読む。書き込みもできる接続は「seed ユーザーの回数の行の削除」と「rollback で終わるトランザクション」の 2 つだけに使う。テストの前・回数のテストの最初と finally で seed ユーザーの行を消す
   - RAG の陽性対照は `scripts/local-seed/positive-control/`（ローカル専用・127.0.0.1:54322 だけ）。project_chunks の「client select own」を A（`using (true)`）にすると 32 FAIL、B（支払いの条件を外す）にすると 25 FAIL。`restore.sql` で戻すと qual が元と文字まで同じになり、全部 PASS に戻る（件数は 0007 の時点で測ったもの）。手順は `scripts/local-seed/README.md`
   - 回数制限の陽性対照 C は同じフォルダの `break-c.sql`（上限の where を外す）・`restore-c.sql`・`prosrc-c.sql`。6 FAIL / 416 PASS → 戻して 422 PASS
-- CI（`.github/workflows/verify-rls.yml`・PR #14）：main への PR ごとに、GitHub Actions が手元と同じローカルの Supabase を立ち上げ、seed と verify-rls（422 項目）を流す
+- CI（`.github/workflows/verify-rls.yml`・PR #14）：main への PR ごとに、GitHub Actions が手元と同じローカルの Supabase を立ち上げ、seed と verify-rls（467 項目）を流す
   - verify-rls は main の必須チェック（ルールセット）。FAIL があるとマージできない。main へは直接 push できないので、ブランチと PR で入れる
   - 陽性対照：projects をわざと authenticated 全員に見えるようにした PR（#15）は PASS 410 / FAIL 12 で止まり、マージできないことを確認した。マージせずに閉じ、ブランチも削除済み
+- 行の無い Storage の実体をお客様から読めなくする（0010・ブランチ `fix/storage-require-file-row`）：
+  - 理由：deleteProjectFile で行を消した後に Storage の削除だけ失敗すると（`storage_failed`）、実体が残り、パスを知っている同じ会社のお客様が直接読めたため
+  - verify-rls に `runOrphanObject()`（8 checks）を足した：A社の支払い済み案件のフォルダに行の無い実体を service_role で上げ、owner・staff の download・createSignedUrl・createSignedUrls が拒否され、管理者は download できることを見る。実体は finally で消す
+  - ローカルで確認済み（2026-11-23）：`db reset` → seed → verify-rls 467 PASS / 0 FAIL。`0010_verify.sql` の POST → rollback → PRE（すべて合格・件数と指紋も同じ）→ もう一度 rollback すると「0010 is not applied」で止まる。rollback した状態の verify-rls は 461 PASS / 6 FAIL（FAIL は足したお客様のテスト 6 件だけ）→ 当て直して POST 合格 → `db reset` → seed → 467 PASS / 0 FAIL
+  - 確認 SQL は like ではなく strpos で式の文字を見る（like の `_` は任意の 1 文字なので、`'%project_files%'` がバケット名 `'project-files'` にも当たる）
+  - 本番には未適用。push・PR もまだ
 - 開発モードで `Date.now()` の Blocking Route 警告が残っているが、`pnpm build` は成功する
