@@ -134,10 +134,11 @@ node scripts/local-seed/verify-rls.mjs
 
 ### service_role の表の権限の確認
 
-期待値は `verify-rls.mjs` の `EXPECTED_SERVICE_ROLE_PRIVILEGES`（0008 の後の形）。
+期待値は `verify-rls.mjs` の `EXPECTED_SERVICE_ROLE_PRIVILEGES`（0009 の後の形。0010 は表の権限を変えない）。
 
-- 列の確認と同じく `DB_URL` で Postgres に読み取り専用でつなぎ、public の 9 つの表それぞれに `has_table_privilege('service_role', …)` で 8 種類（SELECT・INSERT・UPDATE・DELETE・TRUNCATE・REFERENCES・TRIGGER・MAINTAIN）を当てる。MAINTAIN は `information_schema` に出ないので、この関数で見る。
-- 期待値と完全に一致すれば PASS（7 つの表は SELECT・INSERT・UPDATE・DELETE、stripe_events は SELECT・INSERT だけ、question_usage は何も無い）。1 表で 1 件、合計 9 件。
+- 列の確認と同じく `DB_URL` で Postgres に読み取り専用でつなぎ、public の 10 の表それぞれに `has_table_privilege('service_role', …)` で 8 種類（SELECT・INSERT・UPDATE・DELETE・TRUNCATE・REFERENCES・TRIGGER・MAINTAIN）を当てる。MAINTAIN は `information_schema` に出ないので、この関数で見る。
+- 期待値と完全に一致すれば PASS（8 つの表は SELECT・INSERT・UPDATE・DELETE、stripe_events は SELECT・INSERT だけ、question_usage は何も無い）。1 表で 1 件、合計 10 件。
+  - SELECT・INSERT・UPDATE・DELETE の 8 つ：profiles・projects・project_files・organizations・organization_members・project_notes・project_chunks・project_file_ingests（project_notes・project_chunks・project_file_ingests は seed 用）
 - FAIL のときの表示：
   - `extra (should be revoked)`：外したはずの権限が残っている（0006 が当たっていない、新しい表で revoke を忘れた、など）
   - `missing (app needs it)`：アプリが使う権限が無い（Server Action・Webhook が失敗する）
