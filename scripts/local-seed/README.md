@@ -219,6 +219,24 @@ node scripts/local-seed/verify-rls.mjs   #    → 467 PASS / FAIL 0 に戻る
 - 上の件数（6 FAIL / 461 PASS・戻して 467 PASS）は 2026-11-24 に CLI 3.2.0 で測った数（全 467 件）。0008 の時点（全 422 件）は 6 FAIL / 416 PASS・戻して 422 PASS だった。0009・0010 のテストは回数制限に関係しないので、増えたのは PASS の 45 件だけで、落ちる 6 件は同じ
 - 途中で止まったら、必ず `restore-c.sql` を流してから `prosrc-c.sql` と verify-rls で元どおりかを確かめる
 
+## Demo: why a Supabase query returns nothing (no error)
+
+`demo-empty-result.mjs` reproduces three common causes of "the data is there, but my query comes back empty, with no error", then fixes each one:
+
+1. **No policy**: RLS is on, but no policy lets the user read the rows.
+2. **Wrong column**: a policy exists, but it compares the wrong column (`id = auth.uid()` instead of `owner_id = auth.uid()`).
+3. **Not signed in**: the policy is `to authenticated`, but the app queries with the anon client before sign-in.
+
+```bash
+node scripts/local-seed/demo-empty-result.mjs
+```
+
+It creates a temporary table `public.demo_empty_notes` (3 rows for client-a, 2 for client-b), and compares what the app sees (supabase-js, anon key + client-a sign-in) with a direct Postgres count. The result table is printed and written to `scripts/local-seed/reports/demo-empty-result-latest.md` (git-ignored). The table is dropped in a `finally` block, even if a step fails. Run the seed first.
+
+SQL Editor bypasses RLS, the app doesn't. That is why the data looks fine in the dashboard and empty in the app.
+
+Local only: `guard.mjs` refuses any host other than 127.0.0.1 / localhost, and `.env.local` is never read. It never touches production.
+
 ### テストでデータが変わってしまったとき
 
 書き込みの検証が破れてデータが変わった場合は、seed.mjs で作り直せる。
