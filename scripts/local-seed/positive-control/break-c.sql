@@ -3,7 +3,7 @@
 -- ・ローカル専用。本番では絶対に流さない（seed のユーザー admin@seed.test がいなければ止まる）
 -- ・on conflict do update の「where u.question_count < daily_limit」だけを外し、
 --   上限を過ぎても数え続ける状態にして、verify-rls が FAIL を出せるかを確かめる
---   （予想：6 FAIL / 416 PASS。同時 25 回の 2 件・25 回の後の回数・21 回目・上限の後の回数・rollback の後の回数）
+--   （予想：6 FAIL / 461 PASS（total 467）。同時 25 回の 2 件・25 回の後の回数・21 回目・上限の後の回数・rollback の後の回数）
 -- ・create or replace なので、持ち主と EXECUTE の権限はそのまま残る
 -- ・終わったら必ず restore-c.sql で戻す
 -- =========================================================

@@ -207,16 +207,16 @@ node scripts/local-seed/verify-rls.mjs   #    → 全部 PASS / FAIL 0 に戻る
 R=scripts/local-seed/positive-control
 node $R/run-sql.mjs $R/prosrc-c.sql      # 1. 本文と md5 を控える
 node $R/run-sql.mjs $R/break-c.sql       # 2. C を流す
-node scripts/local-seed/verify-rls.mjs   #    → 6 FAIL / 416 PASS（終了コード 1）
+node scripts/local-seed/verify-rls.mjs   #    → 6 FAIL / 461 PASS（終了コード 1）
 node $R/run-sql.mjs $R/restore-c.sql     # 3. 戻す
 node $R/run-sql.mjs $R/prosrc-c.sql      #    → 1. と同じ行（md5 も同じ）
-node scripts/local-seed/verify-rls.mjs   #    → 422 PASS / FAIL 0 に戻る
+node scripts/local-seed/verify-rls.mjs   #    → 467 PASS / FAIL 0 に戻る
 ```
 
 - C（6 FAIL）：同時 25 回の 2 件（25 回とも受け付け・remaining が -5〜19）、25 回の後の回数（25）、21 回目（`allowed=true, remaining=-6`）、上限の後の回数（26）、rollback の後の確認（today: 26）。1 回目・人ごと・uid が null・日付の境目・権限・拒否は PASS のまま
 - 戻した後の本文の md5 は、0008_question_quota.sql の `$$ … $$` の中身と同じ（2026-11-19 に確認：674 文字）
 - 回数の行は finally で消すので、壊している間も最後の data unchanged は identical のまま
-- 上の件数（6 FAIL / 416 PASS・戻して 422 PASS）は 0008 の時点（全 422 件）で測った数。0009・0010 のテストは回数制限に関係しないので、今は PASS だけが 45 件増える見込み（6 FAIL / 461 PASS・戻して 467 PASS。0010 の後には測っていない）
+- 上の件数（6 FAIL / 461 PASS・戻して 467 PASS）は 2026-11-24 に CLI 3.2.0 で測った数（全 467 件）。0008 の時点（全 422 件）は 6 FAIL / 416 PASS・戻して 422 PASS だった。0009・0010 のテストは回数制限に関係しないので、増えたのは PASS の 45 件だけで、落ちる 6 件は同じ
 - 途中で止まったら、必ず `restore-c.sql` を流してから `prosrc-c.sql` と verify-rls で元どおりかを確かめる
 
 ### テストでデータが変わってしまったとき
